@@ -1,7 +1,6 @@
 import { CheckCircle2, Download, RefreshCw, Share, WifiOff, X } from 'lucide-react';
 import { useState } from 'react';
 import { usePWAInstall } from '../hooks/usePWAInstall';
-import { OFFICIAL_TABSCORE_ICON } from '../utils/appAssets';
 
 export function PWAInstallButton({ compact = false }: { compact?: boolean }) {
   const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
@@ -51,7 +50,7 @@ export function PWAInstallButton({ compact = false }: { compact?: boolean }) {
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2.5 min-w-0">
                   <img
-                    src={OFFICIAL_TABSCORE_ICON}
+                    src="/assets/aistudio/TabScore_34d66820.png"
                     alt="TabScore"
                     className="h-9 w-auto shrink-0 object-contain"
                   />
@@ -158,7 +157,7 @@ export function PWABanners({
           <div className="flex items-start justify-between gap-2">
             <div className="flex items-start gap-2.5 min-w-0">
               <img
-                src={OFFICIAL_TABSCORE_ICON}
+                src="/assets/aistudio/TabScore_34d66820.png"
                 alt=""
                 aria-hidden="true"
                 className="mt-0.5 h-8 w-auto shrink-0 object-contain"
