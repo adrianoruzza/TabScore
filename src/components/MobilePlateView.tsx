@@ -365,7 +365,9 @@ export function MobilePlateView({
                           })
                         }
                         className={`relative h-8 rounded border px-2 font-mono text-[11px] font-semibold ${
-                          active
+                          showExNoAsterisk
+                            ? 'border-lime-500 bg-lime-200/85 text-lime-950 hover:bg-lime-300/75 ring-1 ring-slate-900/30'
+                            : active
                             ? `${STATUS_META[code].buttonClass} ring-1 ring-slate-900/30`
                             : 'border-slate-200 bg-white text-slate-500'
                         }`}

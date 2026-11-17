@@ -88,6 +88,7 @@ interface GradeTableProps {
     }
   ) => void;
   onOpenFolderStudent: (studentId: string, folder: FolderDelivery) => void;
+  suppressKeyboardShortcuts?: boolean;
 }
 
 type ColumnItem =
@@ -202,6 +203,7 @@ export function GradeTable({
   onUpdateCell,
   onUpdateFolderStudentRecord,
   onOpenFolderStudent,
+  suppressKeyboardShortcuts = false,
 }: GradeTableProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const headerRow1Ref = useRef<HTMLTableRowElement>(null);
@@ -217,6 +219,8 @@ export function GradeTable({
   const [activePopover, setActivePopover] = useState<ActiveCellPopover | null>(
     null
   );
+  const activePopoverRef = useRef<ActiveCellPopover | null>(null);
+  activePopoverRef.current = activePopover;
   const [activeDatePopover, setActiveDatePopover] =
     useState<ActiveFolderDatePopover | null>(null);
   const [activeFolderGradePopover, setActiveFolderGradePopover] =
@@ -237,6 +241,10 @@ export function GradeTable({
   const [collapsedFoldersByClass, setCollapsedFoldersByClass] = useState<
     Record<string, string[]>
   >(() => loadCollapsedFoldersMap());
+  const [focusedGradeCell, setFocusedGradeCell] = useState<{
+    studentId: string;
+    plateId: string;
+  } | null>(null);
   const [fontsReadyTick, setFontsReadyTick] = useState(0);
 
   const collapsedFolderSet = useMemo(() => {
@@ -273,6 +281,7 @@ export function GradeTable({
     setHighlightedStudentId(null);
     setActivePlatePreview(null);
     setViewerPlateId(null);
+    setFocusedGradeCell(null);
   }, [classData.id]);
 
   // Press-and-hold activates persistent highlight; releasing does NOT turn it off
@@ -630,8 +639,32 @@ export function GradeTable({
     setEditingTitlePlateId(null);
   };
 
+  const handleFocusGradeCell = useCallback(
+    (studentId: string, plateId: string) => {
+      setFocusedGradeCell({ studentId, plateId });
+    },
+    []
+  );
+
+  const handleClearFocusGradeCell = useCallback(() => {
+    setFocusedGradeCell(null);
+  }, []);
+
+  const handleBlurGradeCell = useCallback(
+    (relatedTarget: EventTarget | null) => {
+      window.requestAnimationFrame(() => {
+        if (activePopoverRef.current) return;
+        const el = relatedTarget as HTMLElement | null;
+        if (el && el.closest?.('[data-grade-cell]')) return;
+        setFocusedGradeCell(null);
+      });
+    },
+    []
+  );
+
   const handleOpenCellStatus = useCallback(
     (studentId: string, plateId: string, rect: DOMRect) => {
+      setFocusedGradeCell(null);
       setActivePopover({ mode: 'status', studentId, plateId, rect });
     },
     []
@@ -639,6 +672,7 @@ export function GradeTable({
 
   const handleOpenCellGrade = useCallback(
     (studentId: string, plateId: string, rect: DOMRect) => {
+      setFocusedGradeCell({ studentId, plateId });
       setActivePopover({ mode: 'grade', studentId, plateId, rect });
     },
     []
@@ -646,6 +680,7 @@ export function GradeTable({
 
   const handleOpenFolderDate = useCallback(
     (studentId: string, folderId: string, rect: DOMRect) => {
+      setFocusedGradeCell(null);
       setActiveDatePopover({ studentId, folderId, rect });
     },
     []
@@ -662,6 +697,7 @@ export function GradeTable({
 
   const handleOpenFolderGrade = useCallback(
     (studentId: string, folderId: string, rect: DOMRect) => {
+      setFocusedGradeCell(null);
       setActiveFolderGradePopover({ studentId, folderId, rect });
     },
     []
@@ -669,10 +705,163 @@ export function GradeTable({
 
   const handleOpenFolderDetail = useCallback(
     (studentId: string, folder: FolderDelivery) => {
+      setFocusedGradeCell(null);
       onOpenFolderStudent(studentId, folder);
     },
     [onOpenFolderStudent]
   );
+
+  const visiblePlatesInOrder = useMemo(
+    () =>
+      columns
+        .filter((c): c is Extract<ColumnItem, { kind: 'plate' }> => c.kind === 'plate')
+        .map((c) => c.plate),
+    [columns]
+  );
+
+  // Keyboard grade deletion via Canc (Delete) and arrow-key navigation across grade cells
+  useEffect(() => {
+    const isEditableElement = (el: HTMLElement | null) =>
+      Boolean(
+        el &&
+          (el.tagName === 'INPUT' ||
+            el.tagName === 'TEXTAREA' ||
+            el.tagName === 'SELECT' ||
+            el.isContentEditable ||
+            el.closest('[contenteditable="true"]'))
+      );
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (suppressKeyboardShortcuts) return;
+      if (
+        activeDatePopover ||
+        activeFolderGradePopover ||
+        activePlatePreview ||
+        viewerPlateId ||
+        editingTitlePlateId
+      ) {
+        return;
+      }
+
+      const targetEl = e.target as HTMLElement | null;
+      const activeEl = document.activeElement as HTMLElement | null;
+      if (isEditableElement(targetEl) || isEditableElement(activeEl)) return;
+
+      // 1. Delete (Canc) removes ONLY the grade of the single selected/focused grade cell
+      if (e.key === 'Delete') {
+        if (e.repeat || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+        // Let CellPopover status mode handle status clearing without interference
+        if (activePopover?.mode === 'status') return;
+
+        let targetCell: { studentId: string; plateId: string } | null = null;
+        if (activePopover?.mode === 'grade') {
+          targetCell = {
+            studentId: activePopover.studentId,
+            plateId: activePopover.plateId,
+          };
+        } else {
+          const gradeBtn =
+            (activeEl?.closest('[data-grade-cell]') as HTMLElement | null) ??
+            (targetEl?.closest('[data-grade-cell]') as HTMLElement | null);
+          const attr = gradeBtn?.getAttribute('data-grade-cell');
+          if (attr) {
+            const sepIdx = attr.indexOf('::');
+            if (sepIdx > 0) {
+              targetCell = {
+                studentId: attr.slice(0, sepIdx),
+                plateId: attr.slice(sepIdx + 2),
+              };
+            }
+          }
+        }
+
+        if (!targetCell) return;
+
+        const cellKey = `${targetCell.studentId}::${targetCell.plateId}`;
+        const existingCell =
+          classData.evaluations[targetCell.studentId]?.[targetCell.plateId];
+
+        if (existingCell && existingCell.grade !== null) {
+          e.preventDefault();
+          e.stopPropagation();
+          onUpdateCell(targetCell.studentId, targetCell.plateId, { grade: null });
+          if (activePopover?.mode === 'grade') {
+            setActivePopover(null);
+          }
+          setFocusedGradeCell(targetCell);
+          window.requestAnimationFrame(() => {
+            const btn = scrollContainerRef.current?.querySelector(
+              `[data-grade-cell="${cellKey}"]`
+            ) as HTMLElement | null;
+            btn?.focus();
+          });
+        } else if (activePopover?.mode === 'grade') {
+          e.preventDefault();
+          setActivePopover(null);
+          window.requestAnimationFrame(() => {
+            const btn = scrollContainerRef.current?.querySelector(
+              `[data-grade-cell="${cellKey}"]`
+            ) as HTMLElement | null;
+            btn?.focus();
+          });
+        }
+        return;
+      }
+
+      // 2. Arrow keys move focus across visible VOTO cells when no popover is open
+      if (
+        !activePopover &&
+        (e.key === 'ArrowUp' ||
+          e.key === 'ArrowDown' ||
+          e.key === 'ArrowLeft' ||
+          e.key === 'ArrowRight')
+      ) {
+        const gradeBtn = activeEl?.closest('[data-grade-cell]') as HTMLElement | null;
+        const attr = gradeBtn?.getAttribute('data-grade-cell');
+        if (!attr) return;
+        const sepIdx = attr.indexOf('::');
+        if (sepIdx <= 0) return;
+        const stuId = attr.slice(0, sepIdx);
+        const pltId = attr.slice(sepIdx + 2);
+
+        const sIdx = sortedStudents.findIndex((s) => s.id === stuId);
+        const pIdx = visiblePlatesInOrder.findIndex((p) => p.id === pltId);
+        if (sIdx === -1 || pIdx === -1) return;
+
+        let nextS = sIdx;
+        let nextP = pIdx;
+        if (e.key === 'ArrowUp') nextS = Math.max(0, sIdx - 1);
+        else if (e.key === 'ArrowDown')
+          nextS = Math.min(sortedStudents.length - 1, sIdx + 1);
+        else if (e.key === 'ArrowLeft') nextP = Math.max(0, pIdx - 1);
+        else if (e.key === 'ArrowRight')
+          nextP = Math.min(visiblePlatesInOrder.length - 1, pIdx + 1);
+
+        if (nextS === sIdx && nextP === pIdx) return;
+        e.preventDefault();
+        const nextKey = `${sortedStudents[nextS].id}::${visiblePlatesInOrder[nextP].id}`;
+        const nextBtn = scrollContainerRef.current?.querySelector(
+          `[data-grade-cell="${nextKey}"]`
+        ) as HTMLElement | null;
+        nextBtn?.focus();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [
+    suppressKeyboardShortcuts,
+    activePopover,
+    activeDatePopover,
+    activeFolderGradePopover,
+    activePlatePreview,
+    viewerPlateId,
+    editingTitlePlateId,
+    classData.evaluations,
+    sortedStudents,
+    visiblePlatesInOrder,
+    onUpdateCell,
+  ]);
 
   const classColor = useMemo(
     () => getClassColorOption(classData.color),
@@ -1371,13 +1560,18 @@ export function GradeTable({
                           activePopover.plateId === p.id;
 
                         const isGradeSelected =
-                          activePopover?.mode === 'grade' &&
-                          activePopover.studentId === stu.id &&
-                          activePopover.plateId === p.id;
+                          (activePopover?.mode === 'grade' &&
+                            activePopover.studentId === stu.id &&
+                            activePopover.plateId === p.id) ||
+                          (!activePopover &&
+                            focusedGradeCell?.studentId === stu.id &&
+                            focusedGradeCell?.plateId === p.id);
 
                         const statusCellBg = statusMeta
                           ? cell.status === 'SI'
-                            ? 'bg-emerald-100/85 text-emerald-950 hover:bg-emerald-200/70'
+                            ? cell.wasNo
+                              ? 'bg-lime-200/80 text-lime-950 hover:bg-lime-300/75'
+                              : 'bg-emerald-100/85 text-emerald-950 hover:bg-emerald-200/70'
                             : cell.status === 'NO'
                             ? 'bg-rose-100/85 text-rose-950 hover:bg-rose-200/70'
                             : cell.status === 'ASS'
@@ -1408,6 +1602,9 @@ export function GradeTable({
                             plateNumber={p.number}
                             onClickStatus={handleOpenCellStatus}
                             onClickGrade={handleOpenCellGrade}
+                            onFocusGrade={handleFocusGradeCell}
+                            onBlurGrade={handleBlurGradeCell}
+                            onFocusStatus={handleClearFocusGradeCell}
                           />
                         );
                       }
@@ -1511,7 +1708,7 @@ export function GradeTable({
             Voto
           </span>
           <span className="inline-flex items-center gap-1 text-slate-500">
-            <span className="relative inline-flex h-3.5 w-6 items-center justify-center rounded-sm border border-emerald-200 bg-emerald-100 font-mono text-[9px] font-bold text-emerald-900">
+            <span className="relative inline-flex h-3.5 w-6 items-center justify-center rounded-sm border border-lime-300 bg-lime-200/85 font-mono text-[9px] font-bold text-lime-950">
               SI
               <span className="absolute -top-0.5 right-0.5 font-mono text-[11px] font-black leading-none text-rose-600">
                 *
@@ -1566,7 +1763,19 @@ export function GradeTable({
               patch
             )
           }
-          onClose={() => setActivePopover(null)}
+          onClose={() => {
+            const closing = activePopoverData;
+            setActivePopover(null);
+            if (closing?.mode === 'grade') {
+              const cellKey = `${closing.student.id}::${closing.plate.id}`;
+              window.requestAnimationFrame(() => {
+                const btn = scrollContainerRef.current?.querySelector(
+                  `[data-grade-cell="${cellKey}"]`
+                ) as HTMLElement | null;
+                btn?.focus();
+              });
+            }
+          }}
         />
       )}
 
@@ -1754,6 +1963,9 @@ const FragmentPlateCells = memo(function FragmentPlateCells({
   plateNumber,
   onClickStatus,
   onClickGrade,
+  onFocusGrade,
+  onBlurGrade,
+  onFocusStatus,
 }: {
   studentId: string;
   plateId: string;
@@ -1771,6 +1983,9 @@ const FragmentPlateCells = memo(function FragmentPlateCells({
   plateNumber: number;
   onClickStatus: (studentId: string, plateId: string, rect: DOMRect) => void;
   onClickGrade: (studentId: string, plateId: string, rect: DOMRect) => void;
+  onFocusGrade: (studentId: string, plateId: string) => void;
+  onBlurGrade: (relatedTarget: EventTarget | null) => void;
+  onFocusStatus: () => void;
 }) {
   const hasExNoPenalty = cell.wasNo && cell.status === 'SI';
   const rowHighlightShadow = isRowHighlighted
@@ -1787,6 +2002,8 @@ const FragmentPlateCells = memo(function FragmentPlateCells({
       >
         <button
           type="button"
+          data-status-cell={`${studentId}::${plateId}`}
+          onFocus={onFocusStatus}
           onClick={(e) =>
             onClickStatus(
               studentId,
@@ -1826,6 +2043,9 @@ const FragmentPlateCells = memo(function FragmentPlateCells({
       >
         <button
           type="button"
+          data-grade-cell={`${studentId}::${plateId}`}
+          onFocus={() => onFocusGrade(studentId, plateId)}
+          onBlur={(e) => onBlurGrade(e.relatedTarget)}
           onClick={(e) =>
             onClickGrade(
               studentId,
@@ -1835,8 +2055,8 @@ const FragmentPlateCells = memo(function FragmentPlateCells({
           }
           title={`${studentName} · Tav. ${plateNumber} Voto: ${formatGradeLabel(
             cell.grade
-          )}`}
-          className={`flex h-full w-full items-center justify-center p-0 font-mono text-[13.5px] tabular-nums transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-600 ${
+          )}${cell.grade !== null ? ' (Canc per rimuovere)' : ''}`}
+          className={`flex h-full w-full items-center justify-center p-0 font-mono text-[13.5px] tabular-nums transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-600 ${
             cell.grade !== null
               ? 'bg-sky-100/65 font-bold text-sky-950 hover:bg-sky-200/65'
               : isRowHighlighted

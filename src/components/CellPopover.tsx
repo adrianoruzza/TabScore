@@ -166,6 +166,7 @@ export function CellPopover({
             {STATUS_ORDER.map((code) => {
               const meta = STATUS_META[code];
               const active = evaluation.status === code;
+              const isExNo = code === 'SI' && active && evaluation.wasNo;
               return (
                 <button
                   key={code}
@@ -174,14 +175,25 @@ export function CellPopover({
                     onChange({ status: active ? null : code });
                     onClose();
                   }}
-                  title={meta.label}
-                  className={`flex h-10 items-center justify-center rounded border font-mono text-xs font-semibold transition-colors ${
-                    active
+                  title={
+                    isExNo
+                      ? 'Consegnata dopo controllo (SI* · penalità ex-NO attiva)'
+                      : meta.label
+                  }
+                  className={`relative flex h-10 items-center justify-center rounded border font-mono text-xs font-semibold transition-colors ${
+                    isExNo
+                      ? 'border-lime-500 bg-lime-200/85 text-lime-950 hover:bg-lime-300/75 ring-2 ring-slate-900/25'
+                      : active
                       ? `${meta.buttonClass} ring-2 ring-slate-900/25`
                       : `${meta.badgeClass} hover:brightness-95`
                   }`}
                 >
-                  {code}
+                  <span>{code}</span>
+                  {isExNo && (
+                    <span className="pointer-events-none absolute top-0.5 right-1 font-mono text-sm font-black leading-none text-rose-600">
+                      *
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -214,6 +226,7 @@ export function CellPopover({
               {STATUS_ORDER.map((code) => {
                 const meta = STATUS_META[code];
                 const active = evaluation.status === code;
+                const isExNo = code === 'SI' && active && evaluation.wasNo;
                 return (
                   <button
                     key={code}
@@ -221,14 +234,25 @@ export function CellPopover({
                     onClick={() =>
                       onChange({ status: active ? null : code })
                     }
-                    title={`${meta.label} (aggiorna senza chiudere)`}
-                    className={`h-6 rounded border font-mono text-[10px] font-semibold transition-colors ${
-                      active
+                    title={
+                      isExNo
+                        ? 'SI* (penalità ex-NO attiva) — aggiorna senza chiudere'
+                        : `${meta.label} (aggiorna senza chiudere)`
+                    }
+                    className={`relative h-6 rounded border font-mono text-[10px] font-semibold transition-colors ${
+                      isExNo
+                        ? 'border-lime-500 bg-lime-200/85 text-lime-950 hover:bg-lime-300/75 ring-1 ring-slate-900/25'
+                        : active
                         ? `${meta.buttonClass} ring-1 ring-slate-900/25`
                         : `${meta.badgeClass} hover:brightness-95`
                     }`}
                   >
-                    {code}
+                    <span>{code}</span>
+                    {isExNo && (
+                      <span className="pointer-events-none absolute -top-0.5 right-0.5 font-mono text-xs font-black leading-none text-rose-600">
+                        *
+                      </span>
+                    )}
                   </button>
                 );
               })}

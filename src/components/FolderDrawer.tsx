@@ -441,10 +441,12 @@ export function FolderDrawer({
                         {item.status && (
                           <span
                             className={`rounded border px-1.5 py-0.5 font-mono text-[11px] font-semibold ${
-                              STATUS_META[item.status].badgeClass
+                              item.status === 'SI' && item.wasNo
+                                ? 'border-lime-400 bg-lime-200/80 text-lime-950'
+                                : STATUS_META[item.status].badgeClass
                             }`}
                           >
-                            {item.status}
+                            {item.status === 'SI' && item.wasNo ? 'SI*' : item.status}
                           </span>
                         )}
                       </div>

@@ -1587,6 +1587,46 @@ export function useGradebookStore() {
     [commit]
   );
 
+  const restoreFromCloudArchive = useCallback(
+    (
+      payload: {
+        version?: number;
+        activeClassId: string | null;
+        classes: ClassData[];
+        auditLog?: AuditLogEntry[];
+      },
+      sourceLabel = 'Google Drive'
+    ) => {
+      commit((prev) => {
+        const normalizedClasses = payload.classes.map((cls, idx) =>
+          normalizeClassData(cls, idx)
+        );
+        const restoredActiveId =
+          payload.activeClassId &&
+          normalizedClasses.some((c) => c.id === payload.activeClassId)
+            ? payload.activeClassId
+            : normalizedClasses[0]?.id ?? null;
+
+        return {
+          version: payload.version ?? prev.version,
+          activeClassId: restoredActiveId,
+          classes: normalizedClasses,
+          auditLog: [
+            makeLog(
+              null,
+              'Archivio completo',
+              'archivio',
+              `Ripristino da ${sourceLabel}`,
+              `Ripristinate ${normalizedClasses.length} classi complete di valutazioni, immagini e cartelline da ${sourceLabel}.`
+            ),
+            ...(Array.isArray(payload.auditLog) ? payload.auditLog : []),
+          ],
+        };
+      });
+    },
+    [commit]
+  );
+
   const recordAuditAction = useCallback(
     (
       classId: string | null,
@@ -1637,6 +1677,7 @@ export function useGradebookStore() {
     updateClassSettings,
     importSingleClass,
     importFullBackup,
+    restoreFromCloudArchive,
     recordAuditAction,
   };
 }
