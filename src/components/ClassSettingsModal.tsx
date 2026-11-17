@@ -1,13 +1,9 @@
 import {
-  AlertCircle,
-  CheckCircle2,
   Cloud,
   CloudDownload,
-  CloudOff,
   CloudUpload,
   Info,
   LogOut,
-  RefreshCw,
   RotateCcw,
   ShieldCheck,
   X,
@@ -25,6 +21,7 @@ import type {
   RoundingMode,
 } from '../types/gradebook';
 import { ROUNDING_MODE_LABELS } from '../utils/calculations';
+import { resolveDriveIndicatorState } from './DriveSyncIndicatorButton';
 
 export type SettingsTab = 'valutazione' | 'drive';
 
@@ -33,6 +30,7 @@ export interface DriveSettingsViewProps {
   hasValidToken: boolean;
   syncMeta: DriveSyncMetadata;
   status: DriveSyncStatus;
+  hasPendingChanges: boolean;
   error: string | null;
   notice: string | null;
   isSyncing: boolean;
@@ -68,77 +66,6 @@ function formatSyncDateTime(iso: string | null): string {
     hour: '2-digit',
     minute: '2-digit',
   });
-}
-
-function getDriveStatusMeta(
-  account: GoogleDriveAccount | null,
-  status: DriveSyncStatus,
-  isOnline: boolean
-): { label: string; badgeClass: string; icon: 'ok' | 'busy' | 'warn' | 'off' } {
-  if (!account) {
-    return {
-      label: 'Non collegato',
-      badgeClass: 'border-slate-200 bg-slate-100 text-slate-700',
-      icon: 'off',
-    };
-  }
-  if (!isOnline && status === 'offline_queued') {
-    return {
-      label: 'Modifiche in attesa di connessione',
-      badgeClass: 'border-amber-300 bg-amber-50 text-amber-900',
-      icon: 'warn',
-    };
-  }
-  switch (status) {
-    case 'syncing':
-      return {
-        label: 'Sincronizzazione in corso',
-        badgeClass: 'border-blue-200 bg-blue-50 text-blue-800',
-        icon: 'busy',
-      };
-    case 'synced':
-      return {
-        label: 'Sincronizzato',
-        badgeClass: 'border-emerald-200 bg-emerald-50 text-emerald-800',
-        icon: 'ok',
-      };
-    case 'unsynced':
-      return {
-        label: 'Modifiche locali da sincronizzare',
-        badgeClass: 'border-sky-200 bg-sky-50 text-sky-900',
-        icon: 'warn',
-      };
-    case 'offline_queued':
-      return {
-        label: 'Modifiche pronte per l’invio',
-        badgeClass: 'border-amber-200 bg-amber-50 text-amber-900',
-        icon: 'warn',
-      };
-    case 'needs_auth':
-      return {
-        label: 'Sessione da riconfermare',
-        badgeClass: 'border-amber-300 bg-amber-50 text-amber-900',
-        icon: 'warn',
-      };
-    case 'conflict':
-      return {
-        label: 'Conflitto da risolvere',
-        badgeClass: 'border-amber-400 bg-amber-100 text-amber-950',
-        icon: 'warn',
-      };
-    case 'error':
-      return {
-        label: 'Errore sincronizzazione',
-        badgeClass: 'border-rose-200 bg-rose-50 text-rose-800',
-        icon: 'warn',
-      };
-    default:
-      return {
-        label: 'Collegato · pronto',
-        badgeClass: 'border-slate-200 bg-slate-100 text-slate-700',
-        icon: 'ok',
-      };
-  }
 }
 
 export function ClassSettingsModal({
@@ -221,11 +148,13 @@ export function ClassSettingsModal({
     onClose();
   };
 
-  const statusMeta = getDriveStatusMeta(
-    driveSync.account,
-    driveSync.status,
-    driveSync.isOnline
-  );
+  const statusMeta = resolveDriveIndicatorState({
+    account: driveSync.account,
+    status: driveSync.status,
+    isOnline: driveSync.isOnline,
+    isSyncing: driveSync.isSyncing,
+    hasPendingChanges: driveSync.hasPendingChanges,
+  });
   const busyDrive = driveSync.isSyncing || driveSync.isRestoring;
 
   return (
@@ -431,18 +360,10 @@ export function ClassSettingsModal({
                 <span
                   className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-semibold ${statusMeta.badgeClass}`}
                 >
-                  {statusMeta.icon === 'ok' && (
-                    <CheckCircle2 className="h-3.5 w-3.5" />
-                  )}
-                  {statusMeta.icon === 'busy' && (
-                    <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                  )}
-                  {statusMeta.icon === 'warn' && (
-                    <AlertCircle className="h-3.5 w-3.5" />
-                  )}
-                  {statusMeta.icon === 'off' && (
-                    <CloudOff className="h-3.5 w-3.5" />
-                  )}
+                  <span
+                    aria-hidden="true"
+                    className={`h-2 w-2 rounded-full ${statusMeta.dotClass}`}
+                  />
                   {statusMeta.label}
                 </span>
               </div>
@@ -513,6 +434,20 @@ export function ClassSettingsModal({
                         Ultima sincronizzazione:{' '}
                         <strong className="font-medium text-slate-700">
                           {formatSyncDateTime(driveSync.syncMeta.lastSyncedAt)}
+                        </strong>
+                      </div>
+                      <div className="mt-0.5 text-[11px] text-slate-500">
+                        Stato modifiche:{' '}
+                        <strong
+                          className={`font-medium ${
+                            driveSync.hasPendingChanges
+                              ? 'text-amber-700'
+                              : 'text-emerald-700'
+                          }`}
+                        >
+                          {driveSync.hasPendingChanges
+                            ? 'Modifiche locali in attesa di sincronizzazione'
+                            : 'Nessuna modifica in attesa'}
                         </strong>
                       </div>
                     </div>

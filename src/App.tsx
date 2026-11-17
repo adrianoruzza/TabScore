@@ -13,6 +13,7 @@ import {
 import { ClassStatsModal } from './components/ClassStatsModal';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { DriveSyncDialogs } from './components/DriveSyncDialogs';
+import { DriveSyncIndicatorButton } from './components/DriveSyncIndicatorButton';
 import { FolderClassStatsModal } from './components/FolderClassStatsModal';
 import { FolderConfigModal } from './components/FolderConfigModal';
 import { FolderDrawer } from './components/FolderDrawer';
@@ -120,7 +121,6 @@ export default function App() {
   const driveSync = useGoogleDriveSync({
     storeState: state,
     dataFingerprint,
-    isEditingBusy,
     onRestoreState: store.restoreFromCloudArchive,
   });
 
@@ -437,6 +437,14 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
+          <DriveSyncIndicatorButton
+            account={driveSync.account}
+            status={driveSync.status}
+            isOnline={driveSync.isOnline}
+            isSyncing={driveSync.isSyncing}
+            hasPendingChanges={driveSync.hasPendingChanges}
+            onClick={() => openSettingsModal('drive')}
+          />
           <PWAInstallButton />
           {!activeClass && (
             <button
@@ -828,6 +836,7 @@ export default function App() {
           hasValidToken: driveSync.hasValidToken,
           syncMeta: driveSync.syncMeta,
           status: driveSync.status,
+          hasPendingChanges: driveSync.hasPendingChanges,
           error: driveSync.error,
           notice: driveSync.notice,
           isSyncing: driveSync.isSyncing,

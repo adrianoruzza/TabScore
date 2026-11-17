@@ -346,60 +346,96 @@ function bytesToDataUrl(bytes: Uint8Array, mimeType: string): string {
   return `data:${mimeType};base64,${btoa(binary)}`;
 }
 
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function driveFetch(
   url: string,
   accessToken: string,
   init: RequestInit = {},
   fetchFn: FetchLike = fetch
 ): Promise<Response> {
-  let response: Response;
-  try {
-    response = await fetchFn(url, {
-      ...init,
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        ...(init.headers ?? {}),
-      },
-    });
-  } catch {
-    throw new DriveApiError(
-      'Errore di rete durante la comunicazione con Google Drive.',
+  const maxAttempts = 3;
+  let lastError: DriveApiError | null = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let response: Response;
+    try {
+      response = await fetchFn(url, {
+        ...init,
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          ...(init.headers ?? {}),
+        },
+      });
+    } catch {
+      lastError = new DriveApiError(
+        'Errore di rete durante la comunicazione con Google Drive.',
+        0,
+        'network'
+      );
+      if (
+        attempt < maxAttempts &&
+        (typeof navigator === 'undefined' || navigator.onLine)
+      ) {
+        await sleepMs(500 * attempt);
+        continue;
+      }
+      throw lastError;
+    }
+
+    if (response.status === 401) {
+      throw new DriveApiError(
+        'Sessione Google Drive scaduta. Riconferma l’accesso per continuare.',
+        401,
+        'unauthorized'
+      );
+    }
+    if (response.status === 403) {
+      throw new DriveApiError(
+        'Permessi Google Drive insufficienti o quota temporaneamente esaurita.',
+        403,
+        'forbidden'
+      );
+    }
+    if (response.status === 404) {
+      throw new DriveApiError(
+        'File o cartella non trovati su Google Drive.',
+        404,
+        'not_found'
+      );
+    }
+
+    // Retry transient rate limit or 5xx errors before failing
+    if (
+      (response.status === 429 || response.status >= 500) &&
+      attempt < maxAttempts
+    ) {
+      await sleepMs(600 * attempt);
+      continue;
+    }
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new DriveApiError(
+        text || `Errore Google Drive (${response.status}).`,
+        response.status,
+        'unknown'
+      );
+    }
+
+    return response;
+  }
+
+  throw (
+    lastError ??
+    new DriveApiError(
+      'Errore temporaneo durante la comunicazione con Google Drive.',
       0,
       'network'
-    );
-  }
-
-  if (response.status === 401) {
-    throw new DriveApiError(
-      'Sessione Google Drive scaduta. Riconferma l’accesso per continuare.',
-      401,
-      'unauthorized'
-    );
-  }
-  if (response.status === 403) {
-    throw new DriveApiError(
-      'Permessi Google Drive insufficienti o quota temporaneamente esaurita.',
-      403,
-      'forbidden'
-    );
-  }
-  if (response.status === 404) {
-    throw new DriveApiError(
-      'File o cartella non trovati su Google Drive.',
-      404,
-      'not_found'
-    );
-  }
-  if (!response.ok) {
-    const text = await response.text().catch(() => '');
-    throw new DriveApiError(
-      text || `Errore Google Drive (${response.status}).`,
-      response.status,
-      'unknown'
-    );
-  }
-
-  return response;
+    )
+  );
 }
 
 async function findFolderByName(
@@ -865,9 +901,7 @@ export async function syncArchiveToDrive(
   );
 
   // Sync plate preview/original images as real binary files in SYNC_TabScore/tavole_immagini
-  const nextImageIndex: Record<string, UploadedImageRef> = {
-    ...meta.uploadedImageIndex,
-  };
+  const nextImageIndex: Record<string, UploadedImageRef> = {};
   const imageManifest: ImageManifestEntry[] = [];
   let remoteImageMap: Map<string, string> | null = null;
 
@@ -878,9 +912,10 @@ export async function syncArchiveToDrive(
       const imageHash = computeImageHash(plate.imageDataUrl);
       const safeName =
         plate.imageName?.trim() || `tavola_${cls.id}_${plate.number}.png`;
-      const prevRef = nextImageIndex[plateKey];
+      const prevRef = meta.uploadedImageIndex[plateKey];
 
       if (prevRef && prevRef.imageHash === imageHash && prevRef.driveFileId) {
+        nextImageIndex[plateKey] = prevRef;
         imageManifest.push({
           classId: cls.id,
           plateId: plate.id,
@@ -926,6 +961,14 @@ export async function syncArchiveToDrive(
           },
           fetchFn
         );
+
+        if (!uploadedImg.id || Number(uploadedImg.size ?? '1') <= 0) {
+          throw new DriveApiError(
+            `Verifica caricamento immagine Tavola ${plate.number} non riuscita.`,
+            0,
+            'corrupt'
+          );
+        }
 
         nextImageIndex[plateKey] = {
           imageHash,
