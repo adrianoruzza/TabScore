@@ -120,7 +120,8 @@ export default function App() {
 
   const driveSync = useGoogleDriveSync({
     storeState: state,
-    dataFingerprint,
+    mutationSeq: store.mutationSeq,
+    mutationSource: store.mutationSource,
     onRestoreState: store.restoreFromCloudArchive,
   });
 

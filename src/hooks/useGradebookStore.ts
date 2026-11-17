@@ -38,6 +38,7 @@ import {
   loadStoreState,
   normalizeClassData,
   saveStoreState,
+  STORE_VERSION,
 } from '../utils/storage';
 
 function makeLog(
@@ -58,20 +59,35 @@ function makeLog(
   };
 }
 
+export type StoreMutationSource = 'init' | 'user' | 'cloud_restore';
+
 export function useGradebookStore() {
-  const [state, setState] = useState<GradebookStoreState>(() => loadStoreState());
+  const [storeRecord, setStoreRecord] = useState<{
+    state: GradebookStoreState;
+    mutationSeq: number;
+    mutationSource: StoreMutationSource;
+  }>(() => ({
+    state: loadStoreState(),
+    mutationSeq: 0,
+    mutationSource: 'init',
+  }));
+  const state = storeRecord.state;
 
   const commit = useCallback(
     (updater: (prev: GradebookStoreState) => GradebookStoreState) => {
-      setState((prev) => {
-        const rawNext = updater(prev);
-        if (rawNext === prev) return prev;
+      setStoreRecord((prev) => {
+        const rawNext = updater(prev.state);
+        if (rawNext === prev.state) return prev;
         const next =
           rawNext.auditLog.length > 500
             ? { ...rawNext, auditLog: rawNext.auditLog.slice(0, 500) }
             : rawNext;
         saveStoreState(next);
-        return next;
+        return {
+          state: next,
+          mutationSeq: prev.mutationSeq + 1,
+          mutationSource: 'user',
+        };
       });
     },
     []
@@ -88,10 +104,13 @@ export function useGradebookStore() {
   // --- CLASS OPERATIONS ---
   const setActiveClass = useCallback(
     (classId: string) => {
-      commit((prev) => ({
-        ...prev,
-        activeClassId: classId,
-      }));
+      commit((prev) => {
+        if (prev.activeClassId === classId) return prev;
+        return {
+          ...prev,
+          activeClassId: classId,
+        };
+      });
     },
     [commit]
   );
@@ -842,10 +861,18 @@ export function useGradebookStore() {
       image: { dataUrl: string; fileName: string } | null
     ): boolean => {
       let savedOk = true;
-      setState((prev) => {
-        const target = prev.classes.find((c) => c.id === classId);
+      setStoreRecord((prev) => {
+        const target = prev.state.classes.find((c) => c.id === classId);
         const existing = target?.plates.find((p) => p.id === plateId);
         if (!target || !existing) return prev;
+        if (!image && !existing.imageDataUrl) return prev;
+        if (
+          image &&
+          existing.imageDataUrl === image.dataUrl &&
+          existing.imageName === image.fileName
+        ) {
+          return prev;
+        }
 
         const actionLabel = !image
           ? 'Rimozione immagine tavola'
@@ -854,8 +881,8 @@ export function useGradebookStore() {
           : 'Caricamento immagine tavola';
 
         const nextState: GradebookStoreState = {
-          ...prev,
-          classes: prev.classes.map((c) =>
+          ...prev.state,
+          classes: prev.state.classes.map((c) =>
             c.id === classId
               ? {
                   ...c,
@@ -887,12 +914,17 @@ export function useGradebookStore() {
                 ? `Tavola ${existing.number}: associata immagine "${image.fileName}".`
                 : `Tavola ${existing.number}: rimossa immagine di anteprima.`
             ),
-            ...prev.auditLog,
+            ...prev.state.auditLog,
           ],
         };
 
         savedOk = saveStoreState(nextState);
-        return savedOk ? nextState : prev;
+        if (!savedOk) return prev;
+        return {
+          state: nextState,
+          mutationSeq: prev.mutationSeq + 1,
+          mutationSource: 'user',
+        };
       });
       return savedOk;
     },
@@ -1596,35 +1628,45 @@ export function useGradebookStore() {
         auditLog?: AuditLogEntry[];
       },
       sourceLabel = 'Google Drive'
-    ) => {
-      commit((prev) => {
-        const normalizedClasses = payload.classes.map((cls, idx) =>
-          normalizeClassData(cls, idx)
-        );
-        const restoredActiveId =
-          payload.activeClassId &&
-          normalizedClasses.some((c) => c.id === payload.activeClassId)
-            ? payload.activeClassId
-            : normalizedClasses[0]?.id ?? null;
+    ): GradebookStoreState => {
+      const normalizedClasses = payload.classes.map((cls, idx) =>
+        normalizeClassData(cls, idx)
+      );
+      const restoredActiveId =
+        payload.activeClassId &&
+        normalizedClasses.some((c) => c.id === payload.activeClassId)
+          ? payload.activeClassId
+          : normalizedClasses[0]?.id ?? null;
 
-        return {
-          version: payload.version ?? prev.version,
-          activeClassId: restoredActiveId,
-          classes: normalizedClasses,
-          auditLog: [
-            makeLog(
-              null,
-              'Archivio completo',
-              'archivio',
-              `Ripristino da ${sourceLabel}`,
-              `Ripristinate ${normalizedClasses.length} classi complete di valutazioni, immagini e cartelline da ${sourceLabel}.`
-            ),
-            ...(Array.isArray(payload.auditLog) ? payload.auditLog : []),
-          ],
-        };
-      });
+      const isCloudRestore = sourceLabel === 'Google Drive';
+      const baseLogs = Array.isArray(payload.auditLog) ? payload.auditLog : [];
+      const nextState: GradebookStoreState = {
+        version: payload.version ?? STORE_VERSION,
+        activeClassId: restoredActiveId,
+        classes: normalizedClasses,
+        auditLog: isCloudRestore
+          ? baseLogs.slice(0, 500)
+          : [
+              makeLog(
+                null,
+                'Archivio completo',
+                'archivio',
+                `Ripristino da ${sourceLabel}`,
+                `Ripristinate ${normalizedClasses.length} classi complete di valutazioni, immagini e cartelline da ${sourceLabel}.`
+              ),
+              ...baseLogs,
+            ].slice(0, 500),
+      };
+
+      saveStoreState(nextState);
+      setStoreRecord((prev) => ({
+        state: nextState,
+        mutationSeq: isCloudRestore ? prev.mutationSeq : prev.mutationSeq + 1,
+        mutationSource: isCloudRestore ? 'cloud_restore' : 'user',
+      }));
+      return nextState;
     },
-    [commit]
+    []
   );
 
   const recordAuditAction = useCallback(
@@ -1648,6 +1690,8 @@ export function useGradebookStore() {
 
   return {
     state,
+    mutationSeq: storeRecord.mutationSeq,
+    mutationSource: storeRecord.mutationSource,
     activeClass,
     setActiveClass,
     createClass,

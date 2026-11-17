@@ -28,6 +28,7 @@ import {
   type TabScoreSyncSummary,
 } from '../services/googleDriveSync';
 import type { GradebookStoreState } from '../types/gradebook';
+import type { StoreMutationSource } from './useGradebookStore';
 
 export type PendingDriveDialog =
   | {
@@ -53,15 +54,20 @@ export type PendingDriveDialog =
 
 interface UseGoogleDriveSyncOptions {
   storeState: GradebookStoreState;
-  dataFingerprint: string;
-  onRestoreState: (payload: TabScoreSyncPayload, sourceLabel?: string) => void;
+  mutationSeq: number;
+  mutationSource: StoreMutationSource;
+  onRestoreState: (
+    payload: TabScoreSyncPayload,
+    sourceLabel?: string
+  ) => GradebookStoreState;
 }
 
-const AUTO_SYNC_DEBOUNCE_MS = 1500;
+const AUTO_SYNC_DEBOUNCE_MS = 2200;
 
 export function useGoogleDriveSync({
   storeState,
-  dataFingerprint,
+  mutationSeq,
+  mutationSource,
   onRestoreState,
 }: UseGoogleDriveSyncOptions) {
   const [account, setAccount] = useState<GoogleDriveAccount | null>(null);
@@ -78,6 +84,10 @@ export function useGoogleDriveSync({
     ) {
       return 'offline_queued';
     }
+    if (initial.lastSyncStatus === 'syncing') {
+      // Recover cleanly if a previous tab closed mid-transfer
+      return initial.pendingSync ? 'unsynced' : 'synced';
+    }
     return initial.lastSyncStatus ?? 'idle';
   });
   const [error, setError] = useState<string | null>(null);
@@ -88,7 +98,6 @@ export function useGoogleDriveSync({
     typeof navigator !== 'undefined' ? navigator.onLine : true
   );
   const [localHash, setLocalHash] = useState<string | null>(null);
-  const [syncQueueTick, setSyncQueueTick] = useState(0);
   const [safetyBackup, setSafetyBackup] = useState<LocalSafetyBackup | null>(() =>
     loadLocalSafetyBackup()
   );
@@ -96,14 +105,21 @@ export function useGoogleDriveSync({
     null
   );
 
+  // Refs as single source of truth for async/timer callbacks (prevents reactive loops)
   const storeStateRef = useRef(storeState);
   storeStateRef.current = storeState;
+
+  const mutationSeqRef = useRef(mutationSeq);
+  mutationSeqRef.current = mutationSeq;
 
   const syncMetaRef = useRef(syncMeta);
   syncMetaRef.current = syncMeta;
 
-  const latestLocalHashRef = useRef<string | null>(localHash);
-  latestLocalHashRef.current = localHash;
+  const accountRef = useRef(account);
+  accountRef.current = account;
+
+  const hasValidTokenRef = useRef(hasValidToken);
+  hasValidTokenRef.current = hasValidToken;
 
   const isOnlineRef = useRef(isOnline);
   isOnlineRef.current = isOnline;
@@ -111,8 +127,22 @@ export function useGoogleDriveSync({
   const statusRef = useRef(status);
   statusRef.current = status;
 
+  const pendingDialogRef = useRef(pendingDialog);
+  pendingDialogRef.current = pendingDialog;
+
+  const latestLocalHashRef = useRef<string | null>(localHash);
+  latestLocalHashRef.current = localHash;
+
   const isBusyRef = useRef(false);
-  const queueFollowUpSyncRef = useRef(false);
+  const debounceTimerRef = useRef<number | null>(null);
+  const scheduleAutoSyncRef = useRef<() => void>(() => {});
+
+  const clearDebounceTimer = useCallback(() => {
+    if (debounceTimerRef.current !== null) {
+      window.clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+  }, []);
 
   const updateMeta = useCallback(
     (
@@ -130,101 +160,6 @@ export function useGoogleDriveSync({
     },
     []
   );
-
-  // Track browser online / offline events
-  useEffect(() => {
-    const handleOnline = () => setIsOnline(true);
-    const handleOffline = () => setIsOnline(false);
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-    return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
-    };
-  }, []);
-
-  // Track Firebase Auth user & strictly in-memory OAuth access token
-  useEffect(() => {
-    return initGoogleDriveAuth((nextAccount, nextValidToken) => {
-      setAccount(nextAccount);
-      setHasValidToken(nextValidToken);
-      if (!nextAccount) {
-        setStatus('idle');
-      } else if (!nextValidToken) {
-        setStatus((prev) => {
-          if (typeof navigator !== 'undefined' && !navigator.onLine) {
-            return syncMetaRef.current.pendingSync ? 'offline_queued' : prev;
-          }
-          if (prev === 'error' || prev === 'conflict') {
-            return prev;
-          }
-          return 'needs_auth';
-        });
-      }
-    });
-  }, []);
-
-  // Recompute canonical store hash on ANY persistent change (even during an active transfer)
-  useEffect(() => {
-    let active = true;
-    const snapshot = storeState;
-    computeStoreContentHash(snapshot).then((hash) => {
-      if (!active) return;
-      setLocalHash(hash);
-      latestLocalHashRef.current = hash;
-
-      if (!account) return;
-      const meta = syncMetaRef.current;
-      const isDirty =
-        !meta.lastSyncedContentHash || hash !== meta.lastSyncedContentHash;
-
-      if (isDirty) {
-        if (isBusyRef.current) {
-          queueFollowUpSyncRef.current = true;
-        }
-        const offline = !isOnlineRef.current;
-        const nextStatus: DriveSyncStatus = offline
-          ? 'offline_queued'
-          : !hasValidToken
-          ? 'needs_auth'
-          : isBusyRef.current
-          ? 'syncing'
-          : statusRef.current === 'conflict'
-          ? 'conflict'
-          : 'unsynced';
-
-        updateMeta({
-          pendingSync: true,
-          lastSyncStatus:
-            nextStatus === 'syncing' ? 'unsynced' : nextStatus,
-        });
-        setStatus((prev) => {
-          if (prev === 'conflict') return 'conflict';
-          if (prev === 'syncing' && !offline && hasValidToken) return 'syncing';
-          return nextStatus;
-        });
-      } else if (!isBusyRef.current) {
-        if (meta.pendingSync) {
-          updateMeta({ pendingSync: false });
-        }
-        if (hasValidToken && meta.syncConfirmedByUser) {
-          setStatus((prev) =>
-            prev === 'conflict' || prev === 'error' ? prev : 'synced'
-          );
-        }
-      }
-    });
-    return () => {
-      active = false;
-    };
-  }, [
-    storeState,
-    dataFingerprint,
-    account,
-    hasValidToken,
-    isOnline,
-    updateMeta,
-  ]);
 
   const handleDriveFailure = useCallback(
     (err: unknown) => {
@@ -268,7 +203,7 @@ export function useGoogleDriveSync({
     async (
       accessToken: string,
       inspection: RemoteArchiveInspection | null
-    ): Promise<TabScoreSyncPayload> => {
+    ): Promise<{ payload: TabScoreSyncPayload; hasMoreChanges: boolean }> => {
       const meta = syncMetaRef.current;
       const snapshotState = storeStateRef.current;
       const nextRevision = (inspection?.remotePayload?.revision ?? 0) + 1;
@@ -287,18 +222,20 @@ export function useGoogleDriveSync({
         }
       );
 
+      // Verify exact state right after upload finishes:
+      // only mark pending if the user made real persistent edits during transfer.
+      const actualHashNow = await computeStoreContentHash(storeStateRef.current);
+      latestLocalHashRef.current = actualHashNow;
+      setLocalHash(actualHashNow);
+
+      const changedDuringTransfer =
+        actualHashNow !== uploaded.payload.contentHash;
       const now = new Date().toISOString();
-      const latestHashNow = latestLocalHashRef.current;
-      const editedDuringTransfer =
-        Boolean(
-          latestHashNow && latestHashNow !== uploaded.payload.contentHash
-        ) || queueFollowUpSyncRef.current;
 
-      queueFollowUpSyncRef.current = false;
-
-      if (editedDuringTransfer) {
-        // Newer local changes arrived while this upload was in flight:
-        // preserve dirty state and schedule follow-up sync immediately.
+      if (changedDuringTransfer) {
+        const nextStatus: DriveSyncStatus = isOnlineRef.current
+          ? 'unsynced'
+          : 'offline_queued';
         updateMeta({
           syncConfirmedByUser: true,
           folderId: uploaded.folderId,
@@ -308,12 +245,11 @@ export function useGoogleDriveSync({
           lastSyncedContentHash: uploaded.payload.contentHash,
           lastSyncedRemoteRevision: uploaded.payload.revision,
           lastSyncedAt: now,
-          lastSyncStatus: isOnlineRef.current ? 'unsynced' : 'offline_queued',
+          lastSyncStatus: nextStatus,
           lastError: null,
           pendingSync: true,
         });
-        setStatus(isOnlineRef.current ? 'unsynced' : 'offline_queued');
-        setSyncQueueTick((t) => t + 1);
+        setStatus(nextStatus);
       } else {
         updateMeta({
           syncConfirmedByUser: true,
@@ -332,16 +268,357 @@ export function useGoogleDriveSync({
       }
 
       setError(null);
-      return uploaded.payload;
+      return {
+        payload: uploaded.payload,
+        hasMoreChanges: changedDuringTransfer,
+      };
     },
     [updateMeta]
   );
+
+  const executeAutoSync = useCallback(async () => {
+    debounceTimerRef.current = null;
+
+    if (isBusyRef.current) return;
+    if (!accountRef.current || !isOnlineRef.current) return;
+    const meta = syncMetaRef.current;
+    if (!meta.autoSyncEnabled || !meta.syncConfirmedByUser) return;
+    if (pendingDialogRef.current || statusRef.current === 'conflict') return;
+
+    const accessToken = getInMemoryAccessToken();
+    if (!accessToken) {
+      setStatus('needs_auth');
+      return;
+    }
+
+    const currentHash = await computeStoreContentHash(storeStateRef.current);
+    latestLocalHashRef.current = currentHash;
+    setLocalHash(currentHash);
+
+    // Strictly skip transfer if local data matches the last synced version
+    if (
+      meta.lastSyncedContentHash &&
+      currentHash === meta.lastSyncedContentHash
+    ) {
+      if (meta.pendingSync || meta.lastSyncStatus !== 'synced') {
+        updateMeta({ pendingSync: false, lastSyncStatus: 'synced' });
+      }
+      setStatus('synced');
+      return;
+    }
+
+    isBusyRef.current = true;
+    setIsSyncing(true);
+    setStatus('syncing');
+    setError(null);
+
+    let shouldScheduleFollowUp = false;
+
+    try {
+      const inspection = await inspectDriveSyncState(accessToken, meta);
+      updateMeta({
+        folderId: inspection.folderId,
+        imagesFolderId: inspection.imagesFolderId,
+        archiveFileId: inspection.archiveFileId,
+      });
+
+      if (inspection.archiveFileId && !inspection.remoteIntegrityValid) {
+        setStatus('error');
+        setError(
+          inspection.remoteError ??
+            'L’archivio remoto su Google Drive non ha superato il controllo di integrità.'
+        );
+        return;
+      }
+
+      if (inspection.remotePayload) {
+        if (inspection.remotePayload.contentHash === currentHash) {
+          const actualHashNow = await computeStoreContentHash(
+            storeStateRef.current
+          );
+          latestLocalHashRef.current = actualHashNow;
+          setLocalHash(actualHashNow);
+          const editedDuringInspect = actualHashNow !== currentHash;
+
+          updateMeta({
+            lastSyncedContentHash: currentHash,
+            lastSyncedRemoteRevision: inspection.remotePayload.revision,
+            lastSyncedAt: new Date().toISOString(),
+            lastSyncStatus: editedDuringInspect ? 'unsynced' : 'synced',
+            lastError: null,
+            pendingSync: editedDuringInspect,
+          });
+          setStatus(editedDuringInspect ? 'unsynced' : 'synced');
+          shouldScheduleFollowUp = editedDuringInspect;
+          return;
+        }
+
+        if (
+          inspection.remotePayload.revision !== meta.lastSyncedRemoteRevision
+        ) {
+          setStatus('conflict');
+          setPendingDialog({
+            kind: 'conflict',
+            inspection,
+            localSummary: summarizeStoreState(storeStateRef.current),
+          });
+          return;
+        }
+      }
+
+      const result = await performUpload(accessToken, inspection);
+      shouldScheduleFollowUp = result.hasMoreChanges;
+    } catch (err) {
+      handleDriveFailure(err);
+    } finally {
+      isBusyRef.current = false;
+      setIsSyncing(false);
+      if (shouldScheduleFollowUp) {
+        scheduleAutoSyncRef.current();
+      }
+    }
+  }, [handleDriveFailure, performUpload, updateMeta]);
+
+  const scheduleAutoSync = useCallback(() => {
+    clearDebounceTimer();
+    if (isBusyRef.current) return;
+    if (!accountRef.current || !isOnlineRef.current) return;
+    if (!hasValidTokenRef.current) return;
+    const meta = syncMetaRef.current;
+    if (!meta.autoSyncEnabled || !meta.syncConfirmedByUser) return;
+    if (pendingDialogRef.current || statusRef.current === 'conflict') return;
+
+    const currentHash = latestLocalHashRef.current;
+    if (
+      currentHash &&
+      meta.lastSyncedContentHash &&
+      currentHash === meta.lastSyncedContentHash
+    ) {
+      return;
+    }
+
+    debounceTimerRef.current = window.setTimeout(() => {
+      void executeAutoSync();
+    }, AUTO_SYNC_DEBOUNCE_MS);
+  }, [clearDebounceTimer, executeAutoSync]);
+
+  scheduleAutoSyncRef.current = scheduleAutoSync;
+
+  // Clean up any pending timer on unmount
+  useEffect(() => () => clearDebounceTimer(), [clearDebounceTimer]);
+
+  // Track browser online / offline events
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  // Track Firebase Auth user & strictly in-memory OAuth access token
+  useEffect(() => {
+    return initGoogleDriveAuth((nextAccount, nextValidToken) => {
+      accountRef.current = nextAccount;
+      hasValidTokenRef.current = nextValidToken;
+      setAccount(nextAccount);
+      setHasValidToken(nextValidToken);
+
+      if (!nextAccount) {
+        clearDebounceTimer();
+        setStatus('idle');
+      } else if (!nextValidToken) {
+        clearDebounceTimer();
+        setStatus((prev) => {
+          if (typeof navigator !== 'undefined' && !navigator.onLine) {
+            return syncMetaRef.current.pendingSync ? 'offline_queued' : prev;
+          }
+          if (prev === 'error' || prev === 'conflict') {
+            return prev;
+          }
+          return 'needs_auth';
+        });
+      }
+    });
+  }, [clearDebounceTimer]);
+
+  // React ONLY to persistent store state / user mutation / cloud restore changes
+  // (strictly decoupled from `status`, `isSyncing`, and sync metadata updates!)
+  useEffect(() => {
+    let active = true;
+    const snapshot = storeState;
+    const seqAtStart = mutationSeq;
+    const sourceAtStart = mutationSource;
+
+    computeStoreContentHash(snapshot).then((hash) => {
+      if (!active || seqAtStart !== mutationSeqRef.current) return;
+
+      latestLocalHashRef.current = hash;
+      setLocalHash(hash);
+
+      const currentAccount = accountRef.current;
+      if (!currentAccount) return;
+
+      const meta = syncMetaRef.current;
+      const matchesLastSynced = Boolean(
+        meta.lastSyncedContentHash && hash === meta.lastSyncedContentHash
+      );
+
+      if (matchesLastSynced) {
+        clearDebounceTimer();
+        if (meta.pendingSync) {
+          updateMeta({
+            pendingSync: false,
+            lastSyncStatus: hasValidTokenRef.current
+              ? 'synced'
+              : meta.lastSyncStatus,
+          });
+        }
+        if (
+          !isBusyRef.current &&
+          hasValidTokenRef.current &&
+          meta.syncConfirmedByUser
+        ) {
+          setStatus((prev) =>
+            prev === 'conflict' || prev === 'error' ? prev : 'synced'
+          );
+        }
+        return;
+      }
+
+      // Cloud restore sets `lastSyncedContentHash` explicitly right after restoring;
+      // never treat a cloud download as a pending local modification.
+      if (sourceAtStart === 'cloud_restore') {
+        return;
+      }
+
+      const offline = !isOnlineRef.current;
+      const validToken = hasValidTokenRef.current;
+      const nextStatus: DriveSyncStatus = offline
+        ? 'offline_queued'
+        : !validToken
+        ? 'needs_auth'
+        : statusRef.current === 'conflict'
+        ? 'conflict'
+        : 'unsynced';
+
+      if (
+        sourceAtStart === 'user' ||
+        meta.pendingSync ||
+        meta.syncConfirmedByUser
+      ) {
+        updateMeta({
+          pendingSync: true,
+          lastSyncStatus: nextStatus,
+        });
+      }
+
+      if (!isBusyRef.current) {
+        setStatus((prev) => (prev === 'conflict' ? 'conflict' : nextStatus));
+        if (
+          !offline &&
+          validToken &&
+          meta.autoSyncEnabled &&
+          meta.syncConfirmedByUser
+        ) {
+          scheduleAutoSync();
+        }
+      }
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [
+    storeState,
+    mutationSeq,
+    mutationSource,
+    clearDebounceTimer,
+    scheduleAutoSync,
+    updateMeta,
+  ]);
+
+  // Recover & reconcile ONLY genuine pending changes when connectivity, auth, or auto-sync transitions to active
+  useEffect(() => {
+    if (!account) {
+      clearDebounceTimer();
+      return;
+    }
+
+    const meta = syncMetaRef.current;
+    const currentHash = latestLocalHashRef.current;
+    const isDirty =
+      currentHash !== null &&
+      (!meta.lastSyncedContentHash ||
+        currentHash !== meta.lastSyncedContentHash);
+
+    if (!isOnline) {
+      clearDebounceTimer();
+      if (!isBusyRef.current && (isDirty || meta.pendingSync)) {
+        setStatus('offline_queued');
+      }
+      return;
+    }
+
+    if (!hasValidToken) {
+      clearDebounceTimer();
+      if (
+        !isBusyRef.current &&
+        statusRef.current !== 'error' &&
+        statusRef.current !== 'conflict'
+      ) {
+        setStatus('needs_auth');
+      }
+      return;
+    }
+
+    if (isBusyRef.current) return;
+
+    if (!isDirty && currentHash !== null) {
+      if (meta.pendingSync) {
+        updateMeta({ pendingSync: false, lastSyncStatus: 'synced' });
+      }
+      if (
+        meta.syncConfirmedByUser &&
+        statusRef.current !== 'conflict' &&
+        statusRef.current !== 'error'
+      ) {
+        setStatus('synced');
+      }
+      return;
+    }
+
+    if (
+      isDirty &&
+      meta.autoSyncEnabled &&
+      meta.syncConfirmedByUser &&
+      !pendingDialogRef.current &&
+      statusRef.current !== 'conflict'
+    ) {
+      setStatus('unsynced');
+      scheduleAutoSync();
+    }
+  }, [
+    account,
+    isOnline,
+    hasValidToken,
+    syncMeta.autoSyncEnabled,
+    syncMeta.syncConfirmedByUser,
+    clearDebounceTimer,
+    scheduleAutoSync,
+    updateMeta,
+  ]);
 
   const ensureValidTokenInteractive = useCallback(
     async (forceSelectAccount = false): Promise<string> => {
       const live = getInMemoryAccessToken();
       if (live && !forceSelectAccount) return live;
       const res = await signInWithGoogleDrive(forceSelectAccount);
+      accountRef.current = res.account;
+      hasValidTokenRef.current = true;
       setAccount(res.account);
       setHasValidToken(true);
       return res.accessToken;
@@ -351,11 +628,14 @@ export function useGoogleDriveSync({
 
   const connectGoogle = useCallback(
     async (forceSelectAccount = false) => {
-      if (!isOnline) {
-        setError('Connessione assente: impossibile collegare Google Drive offline.');
+      if (!isOnlineRef.current) {
+        setError(
+          'Connessione assente: impossibile collegare Google Drive offline.'
+        );
         return;
       }
       if (isBusyRef.current) return;
+      clearDebounceTimer();
       isBusyRef.current = true;
       setIsSyncing(true);
       setError(null);
@@ -364,7 +644,9 @@ export function useGoogleDriveSync({
       try {
         const { accessToken } = await signInWithGoogleDrive(forceSelectAccount);
         setStatus('syncing');
-        const currentHash = await computeStoreContentHash(storeStateRef.current);
+        const currentHash = await computeStoreContentHash(
+          storeStateRef.current
+        );
         setLocalHash(currentHash);
         latestLocalHashRef.current = currentHash;
 
@@ -418,7 +700,6 @@ export function useGoogleDriveSync({
           return;
         }
 
-        // No remote archive yet in SYNC_TabScore -> ask one-time confirmation before first upload
         setStatus('unsynced');
         setPendingDialog({
           kind: 'confirm_overwrite_drive',
@@ -432,19 +713,24 @@ export function useGoogleDriveSync({
         setIsSyncing(false);
       }
     },
-    [isOnline, updateMeta, handleDriveFailure]
+    [clearDebounceTimer, updateMeta, handleDriveFailure]
   );
 
   const reconnectSession = useCallback(async () => {
-    if (!isOnline) {
-      setError('Connessione assente: impossibile riconfermare la sessione offline.');
+    if (!isOnlineRef.current) {
+      setError(
+        'Connessione assente: impossibile riconfermare la sessione offline.'
+      );
       return;
     }
     if (isBusyRef.current) return;
+    clearDebounceTimer();
     isBusyRef.current = true;
     setIsSyncing(true);
     setError(null);
     setNotice(null);
+
+    let shouldScheduleFollowUp = false;
 
     try {
       const { accessToken } = await signInWithGoogleDrive(false);
@@ -513,17 +799,22 @@ export function useGoogleDriveSync({
         return;
       }
 
-      await performUpload(accessToken, inspection);
+      const result = await performUpload(accessToken, inspection);
+      shouldScheduleFollowUp = result.hasMoreChanges;
       setNotice('Sessione riconfermata e modifiche sincronizzate su Google Drive.');
     } catch (err) {
       handleDriveFailure(err);
     } finally {
       isBusyRef.current = false;
       setIsSyncing(false);
+      if (shouldScheduleFollowUp) {
+        scheduleAutoSyncRef.current();
+      }
     }
-  }, [isOnline, updateMeta, performUpload, handleDriveFailure]);
+  }, [clearDebounceTimer, updateMeta, performUpload, handleDriveFailure]);
 
   const disconnectGoogle = useCallback(async () => {
+    clearDebounceTimer();
     setError(null);
     setNotice(null);
     setPendingDialog(null);
@@ -535,13 +826,13 @@ export function useGoogleDriveSync({
     setNotice(
       'Account Google scollegato. I dati locali sul dispositivo sono rimasti intatti.'
     );
-  }, []);
+  }, [clearDebounceTimer]);
 
   const requestManualSync = useCallback(async () => {
     setError(null);
     setNotice(null);
 
-    if (!isOnline) {
+    if (!isOnlineRef.current) {
       updateMeta({
         pendingSync: true,
         lastSyncStatus: 'offline_queued',
@@ -553,15 +844,13 @@ export function useGoogleDriveSync({
       return;
     }
 
-    if (isBusyRef.current) {
-      queueFollowUpSyncRef.current = true;
-      setSyncQueueTick((t) => t + 1);
-      return;
-    }
-
+    if (isBusyRef.current) return;
+    clearDebounceTimer();
     isBusyRef.current = true;
     setIsSyncing(true);
     setStatus('syncing');
+
+    let shouldScheduleFollowUp = false;
 
     try {
       const accessToken = await ensureValidTokenInteractive(false);
@@ -627,16 +916,20 @@ export function useGoogleDriveSync({
         return;
       }
 
-      await performUpload(accessToken, inspection);
+      const result = await performUpload(accessToken, inspection);
+      shouldScheduleFollowUp = result.hasMoreChanges;
       setNotice('Sincronizzazione su Google Drive completata e verificata.');
     } catch (err) {
       handleDriveFailure(err);
     } finally {
       isBusyRef.current = false;
       setIsSyncing(false);
+      if (shouldScheduleFollowUp) {
+        scheduleAutoSyncRef.current();
+      }
     }
   }, [
-    isOnline,
+    clearDebounceTimer,
     ensureValidTokenInteractive,
     updateMeta,
     performUpload,
@@ -644,29 +937,33 @@ export function useGoogleDriveSync({
   ]);
 
   const confirmUploadLocalToDrive = useCallback(async () => {
-    if (!isOnline) {
+    if (!isOnlineRef.current) {
       setError('Connessione assente: impossibile caricare su Google Drive.');
       return;
     }
     if (isBusyRef.current) return;
+    clearDebounceTimer();
     isBusyRef.current = true;
     setIsSyncing(true);
     setStatus('syncing');
     setError(null);
     setNotice(null);
 
+    let shouldScheduleFollowUp = false;
+
     try {
       const accessToken = await ensureValidTokenInteractive(false);
       const existingInspection =
-        pendingDialog && 'inspection' in pendingDialog
-          ? pendingDialog.inspection
+        pendingDialogRef.current && 'inspection' in pendingDialogRef.current
+          ? pendingDialogRef.current.inspection
           : null;
       const inspection =
         existingInspection ??
         (await inspectDriveSyncState(accessToken, syncMetaRef.current));
 
       updateMeta({ autoSyncEnabled: true, syncConfirmedByUser: true });
-      await performUpload(accessToken, inspection);
+      const result = await performUpload(accessToken, inspection);
+      shouldScheduleFollowUp = result.hasMoreChanges;
       setPendingDialog(null);
       setNotice(
         'Dati locali salvati su Google Drive (SYNC_TabScore). Sincronizzazione automatica attiva.'
@@ -676,11 +973,13 @@ export function useGoogleDriveSync({
     } finally {
       isBusyRef.current = false;
       setIsSyncing(false);
+      if (shouldScheduleFollowUp) {
+        scheduleAutoSyncRef.current();
+      }
     }
   }, [
-    isOnline,
+    clearDebounceTimer,
     ensureValidTokenInteractive,
-    pendingDialog,
     updateMeta,
     performUpload,
     handleDriveFailure,
@@ -689,11 +988,14 @@ export function useGoogleDriveSync({
   const requestRestoreFromDrive = useCallback(async () => {
     setError(null);
     setNotice(null);
-    if (!isOnline) {
-      setError('Connessione assente: impossibile leggere i dati da Google Drive.');
+    if (!isOnlineRef.current) {
+      setError(
+        'Connessione assente: impossibile leggere i dati da Google Drive.'
+      );
       return;
     }
     if (isBusyRef.current) return;
+    clearDebounceTimer();
     isBusyRef.current = true;
     setIsRestoring(true);
 
@@ -728,14 +1030,19 @@ export function useGoogleDriveSync({
       isBusyRef.current = false;
       setIsRestoring(false);
     }
-  }, [isOnline, ensureValidTokenInteractive, updateMeta, handleDriveFailure]);
+  }, [
+    clearDebounceTimer,
+    ensureValidTokenInteractive,
+    updateMeta,
+    handleDriveFailure,
+  ]);
 
   const confirmRestoreFromDrive = useCallback(async () => {
-    if (!isOnline) {
+    if (!isOnlineRef.current) {
       setError('Connessione assente: impossibile completare il ripristino.');
       return;
     }
-    const targetDialog = pendingDialog;
+    const targetDialog = pendingDialogRef.current;
     if (
       !targetDialog ||
       (targetDialog.kind !== 'confirm_restore' &&
@@ -750,6 +1057,7 @@ export function useGoogleDriveSync({
       return;
     }
     if (isBusyRef.current) return;
+    clearDebounceTimer();
     isBusyRef.current = true;
     setIsRestoring(true);
     setError(null);
@@ -769,27 +1077,24 @@ export function useGoogleDriveSync({
         archiveId
       );
 
-      onRestoreState(hydrated, 'Google Drive');
+      // Restore faithfully without injecting dirty local audit mutations,
+      // then align `lastSyncedContentHash` to the exact restored state hash.
+      const restoredState = onRestoreState(hydrated, 'Google Drive');
+      const restoredHash = await computeStoreContentHash(restoredState);
 
-      const restoredHash = await computeStoreContentHash({
-        activeClassId: hydrated.activeClassId,
-        classes: hydrated.classes,
-        auditLog: hydrated.auditLog,
-      });
-
+      clearDebounceTimer();
       updateMeta({
         syncConfirmedByUser: true,
         archiveFileId: archiveId,
-        lastSyncedContentHash: hydrated.contentHash || restoredHash,
+        lastSyncedContentHash: restoredHash,
         lastSyncedRemoteRevision: hydrated.revision,
         lastSyncedAt: new Date().toISOString(),
         lastSyncStatus: 'synced',
         lastError: null,
         pendingSync: false,
       });
-      setLocalHash(hydrated.contentHash || restoredHash);
-      latestLocalHashRef.current = hydrated.contentHash || restoredHash;
-      queueFollowUpSyncRef.current = false;
+      latestLocalHashRef.current = restoredHash;
+      setLocalHash(restoredHash);
       setStatus('synced');
       setPendingDialog(null);
       setNotice(
@@ -802,8 +1107,7 @@ export function useGoogleDriveSync({
       setIsRestoring(false);
     }
   }, [
-    isOnline,
-    pendingDialog,
+    clearDebounceTimer,
     ensureValidTokenInteractive,
     onRestoreState,
     updateMeta,
@@ -850,16 +1154,17 @@ export function useGoogleDriveSync({
       setError(null);
       setNotice(null);
       if (!enabled) {
+        clearDebounceTimer();
         updateMeta({ autoSyncEnabled: false });
         return;
       }
 
-      if (syncMetaRef.current.syncConfirmedByUser || !account) {
+      if (syncMetaRef.current.syncConfirmedByUser || !accountRef.current) {
         updateMeta({ autoSyncEnabled: true });
         return;
       }
 
-      if (isOnline && hasValidToken) {
+      if (isOnlineRef.current && hasValidTokenRef.current) {
         try {
           const token = getInMemoryAccessToken();
           if (token) {
@@ -886,135 +1191,23 @@ export function useGoogleDriveSync({
         localSummary: summarizeStoreState(storeStateRef.current),
       });
     },
-    [account, isOnline, hasValidToken, updateMeta, handleDriveFailure]
+    [clearDebounceTimer, updateMeta, handleDriveFailure]
   );
 
   const confirmEnableAutoSync = useCallback(async () => {
     updateMeta({ autoSyncEnabled: true, syncConfirmedByUser: true });
     setPendingDialog(null);
-    if (account && isOnline) {
+    if (accountRef.current && isOnlineRef.current) {
       await requestManualSync();
     }
-  }, [account, isOnline, updateMeta, requestManualSync]);
-
-  // Continuous debounced automatic sync + coalesced queue for concurrent edits & reconnect
-  useEffect(() => {
-    if (!account) return;
-    if (!isOnline) return;
-    if (!hasValidToken) return;
-    if (!syncMeta.autoSyncEnabled || !syncMeta.syncConfirmedByUser) return;
-    if (pendingDialog || status === 'conflict') return;
-    if (!localHash) return;
-
-    const isDirty =
-      syncMeta.pendingSync ||
-      !syncMeta.lastSyncedContentHash ||
-      localHash !== syncMeta.lastSyncedContentHash;
-
-    if (!isDirty) return;
-
-    const timer = window.setTimeout(async () => {
-      if (isBusyRef.current) {
-        queueFollowUpSyncRef.current = true;
-        return;
-      }
-      const accessToken = getInMemoryAccessToken();
-      if (!accessToken) {
-        setStatus('needs_auth');
-        return;
-      }
-
-      isBusyRef.current = true;
-      setIsSyncing(true);
-      setStatus('syncing');
-      setError(null);
-
-      try {
-        const meta = syncMetaRef.current;
-        const currentHash = await computeStoreContentHash(storeStateRef.current);
-        latestLocalHashRef.current = currentHash;
-
-        const inspection = await inspectDriveSyncState(accessToken, meta);
-
-        updateMeta({
-          folderId: inspection.folderId,
-          imagesFolderId: inspection.imagesFolderId,
-          archiveFileId: inspection.archiveFileId,
-        });
-
-        if (inspection.archiveFileId && !inspection.remoteIntegrityValid) {
-          setStatus('error');
-          setError(
-            inspection.remoteError ??
-              'L’archivio remoto su Google Drive non ha superato il controllo di integrità.'
-          );
-          return;
-        }
-
-        if (inspection.remotePayload) {
-          if (inspection.remotePayload.contentHash === currentHash) {
-            const latestNow = latestLocalHashRef.current;
-            const changedMeanwhile =
-              Boolean(latestNow && latestNow !== currentHash) ||
-              queueFollowUpSyncRef.current;
-            queueFollowUpSyncRef.current = false;
-
-            updateMeta({
-              lastSyncedContentHash: currentHash,
-              lastSyncedRemoteRevision: inspection.remotePayload.revision,
-              lastSyncedAt: new Date().toISOString(),
-              lastSyncStatus: changedMeanwhile ? 'unsynced' : 'synced',
-              lastError: null,
-              pendingSync: changedMeanwhile,
-            });
-            setStatus(changedMeanwhile ? 'unsynced' : 'synced');
-            if (changedMeanwhile) setSyncQueueTick((t) => t + 1);
-            return;
-          }
-
-          if (inspection.remotePayload.revision !== meta.lastSyncedRemoteRevision) {
-            setStatus('conflict');
-            setPendingDialog({
-              kind: 'conflict',
-              inspection,
-              localSummary: summarizeStoreState(storeStateRef.current),
-            });
-            return;
-          }
-        }
-
-        await performUpload(accessToken, inspection);
-      } catch (err) {
-        handleDriveFailure(err);
-      } finally {
-        isBusyRef.current = false;
-        setIsSyncing(false);
-      }
-    }, AUTO_SYNC_DEBOUNCE_MS);
-
-    return () => window.clearTimeout(timer);
-  }, [
-    account,
-    hasValidToken,
-    isOnline,
-    syncMeta.autoSyncEnabled,
-    syncMeta.syncConfirmedByUser,
-    syncMeta.pendingSync,
-    syncMeta.lastSyncedContentHash,
-    pendingDialog,
-    status,
-    localHash,
-    syncQueueTick,
-    updateMeta,
-    performUpload,
-    handleDriveFailure,
-  ]);
+  }, [updateMeta, requestManualSync]);
 
   const hasPendingChanges = Boolean(
     account &&
       (syncMeta.pendingSync ||
-        !syncMeta.lastSyncedContentHash ||
-        (localHash !== null && localHash !== syncMeta.lastSyncedContentHash))
+        (localHash !== null &&
+          (!syncMeta.lastSyncedContentHash ||
+            localHash !== syncMeta.lastSyncedContentHash)))
   );
 
   const dismissPendingDialog = useCallback(() => {
