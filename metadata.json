@@ -1,0 +1,6 @@
+{
+  "name": "TabScore",
+  "description": "Registro operativo per la gestione e valutazione delle tavole di disegno tecnico e delle consegne delle cartelline.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
