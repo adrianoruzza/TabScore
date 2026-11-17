@@ -6,6 +6,7 @@ import {VitePWA} from 'vite-plugin-pwa';
 
 export default defineConfig(() => {
   return {
+    base: '/TabScore/',
     plugins: [
       react(),
       tailwindcss(),
@@ -23,7 +24,7 @@ export default defineConfig(() => {
           'assets/aistudio/TabScore_34d66820.png',
         ],
         manifest: {
-          id: '/',
+          id: '/TabScore/',
           name: 'TabScore',
           short_name: 'TabScore',
           description:
@@ -33,24 +34,24 @@ export default defineConfig(() => {
           background_color: '#f8fafc',
           display: 'standalone',
           orientation: 'any',
-          start_url: '/',
-          scope: '/',
+          start_url: '/TabScore/',
+          scope: '/TabScore/',
           categories: ['education', 'productivity'],
           icons: [
             {
-              src: '/pwa-192x192.png',
+              src: '/TabScore/pwa-192x192.png',
               sizes: '192x192',
               type: 'image/png',
               purpose: 'any',
             },
             {
-              src: '/pwa-512x512.png',
+              src: '/TabScore/pwa-512x512.png',
               sizes: '512x512',
               type: 'image/png',
               purpose: 'any',
             },
             {
-              src: '/pwa-maskable-512x512.png',
+              src: '/TabScore/pwa-maskable-512x512.png',
               sizes: '512x512',
               type: 'image/png',
               purpose: 'maskable',
@@ -62,8 +63,8 @@ export default defineConfig(() => {
           clientsClaim: true,
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2,webmanifest}'],
-          navigateFallback: '/index.html',
-          navigateFallbackDenylist: [/^\/api\//],
+          navigateFallback: '/TabScore/index.html',
+          navigateFallbackDenylist: [/^\/TabScore\/api\//, /^\/api\//],
           runtimeCaching: [
             {
               urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
