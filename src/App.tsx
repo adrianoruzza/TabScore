@@ -326,7 +326,7 @@ export default function App() {
       <header className="flex shrink-0 items-center justify-between gap-4 border-b border-slate-200 bg-white px-4 py-2 sm:px-5">
         <div className="flex items-center gap-2.5 whitespace-nowrap shrink-0">
           <img
-            src="/assets/aistudio/TabScore_34d66820.png"
+            src={`${import.meta.env.BASE_URL}assets/aistudio/TabScore_34d66820.png`}
             alt=""
             aria-hidden="true"
             className="h-8 w-auto shrink-0 object-contain"
@@ -542,7 +542,7 @@ export default function App() {
         {!activeClass ? (
           <div className="flex flex-1 flex-col items-center justify-center rounded-lg border border-slate-200 bg-white px-6 py-16 text-center">
             <img
-              src="/assets/aistudio/TabScore_34d66820.png"
+              src={`${import.meta.env.BASE_URL}assets/aistudio/TabScore_34d66820.png`}
               alt="TabScore"
               className="mb-4 h-16 w-auto object-contain"
             />

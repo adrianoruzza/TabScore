@@ -5,7 +5,11 @@ import {defineConfig} from 'vite';
 import {VitePWA} from 'vite-plugin-pwa';
 
 export default defineConfig(() => {
+  const rawBase = process.env.VITE_BASE_PATH?.trim() || '/';
+  const base = rawBase.endsWith('/') ? rawBase : `${rawBase}/`;
+
   return {
+    base,
     plugins: [
       react(),
       tailwindcss(),
@@ -23,7 +27,7 @@ export default defineConfig(() => {
           'assets/aistudio/TabScore_34d66820.png',
         ],
         manifest: {
-          id: '/',
+          id: base,
           name: 'TabScore',
           short_name: 'TabScore',
           description:
@@ -33,24 +37,24 @@ export default defineConfig(() => {
           background_color: '#f8fafc',
           display: 'standalone',
           orientation: 'any',
-          start_url: '/',
-          scope: '/',
+          start_url: base,
+          scope: base,
           categories: ['education', 'productivity'],
           icons: [
             {
-              src: '/pwa-192x192.png',
+              src: `${base}pwa-192x192.png`,
               sizes: '192x192',
               type: 'image/png',
               purpose: 'any',
             },
             {
-              src: '/pwa-512x512.png',
+              src: `${base}pwa-512x512.png`,
               sizes: '512x512',
               type: 'image/png',
               purpose: 'any',
             },
             {
-              src: '/pwa-maskable-512x512.png',
+              src: `${base}pwa-maskable-512x512.png`,
               sizes: '512x512',
               type: 'image/png',
               purpose: 'maskable',
@@ -62,7 +66,7 @@ export default defineConfig(() => {
           clientsClaim: true,
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2,webmanifest}'],
-          navigateFallback: '/index.html',
+          navigateFallback: `${base}index.html`,
           navigateFallbackDenylist: [/^\/api\//],
           runtimeCaching: [
             {
