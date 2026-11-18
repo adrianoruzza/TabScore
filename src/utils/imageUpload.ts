@@ -1,13 +1,47 @@
-const ACCEPTED_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/jpg']);
+import {
+  decodeBase64DataUrlToBytes,
+  disposePdfDocument,
+  hasPdfMagicHeader,
+  loadPdfDocumentFromBytes,
+} from './pdfViewer';
+
+const ACCEPTED_IMAGE_MIME_TYPES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/jpg',
+]);
+const ACCEPTED_ATTACHMENT_MIME_TYPES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/jpg',
+  'application/pdf',
+]);
+
 const MAX_DIMENSION_PX = 1400;
 const RAW_PASSTHROUGH_MAX_BYTES = 180_000;
 const TARGET_MAX_BYTES = 420_000;
 
+// Limite cautelativo per mantenere l'archivio compatibile con la quota localStorage (~5 MB)
+export const MAX_PDF_BYTES = 2_500_000;
+
 export function isSupportedPlateImageFile(file: File): boolean {
-  if (ACCEPTED_MIME_TYPES.has(file.type.toLowerCase())) {
+  if (ACCEPTED_IMAGE_MIME_TYPES.has(file.type.toLowerCase())) {
     return true;
   }
   return /\.(png|jpe?g)$/i.test(file.name);
+}
+
+export function isPdfAttachmentFile(file: File): boolean {
+  return (
+    file.type.toLowerCase() === 'application/pdf' || /\.pdf$/i.test(file.name)
+  );
+}
+
+export function isSupportedPlateAttachmentFile(file: File): boolean {
+  if (ACCEPTED_ATTACHMENT_MIME_TYPES.has(file.type.toLowerCase())) {
+    return true;
+  }
+  return /\.(png|jpe?g|pdf)$/i.test(file.name);
 }
 
 function readFileAsDataUrl(file: File): Promise<string> {
@@ -17,10 +51,11 @@ function readFileAsDataUrl(file: File): Promise<string> {
       if (typeof reader.result === 'string') {
         resolve(reader.result);
       } else {
-        reject(new Error('Impossibile leggere il file immagine.'));
+        reject(new Error('Impossibile leggere il file selezionato.'));
       }
     };
-    reader.onerror = () => reject(new Error('Errore durante la lettura del file.'));
+    reader.onerror = () =>
+      reject(new Error('Errore durante la lettura del file.'));
     reader.readAsDataURL(file);
   });
 }
@@ -29,9 +64,19 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error('File immagine non valido o danneggiato.'));
+    img.onerror = () =>
+      reject(new Error('File immagine non valido o danneggiato.'));
     img.src = src;
   });
+}
+
+function normalizePdfDataUrl(rawDataUrl: string): string {
+  const commaIdx = rawDataUrl.indexOf(',');
+  if (commaIdx === -1) {
+    throw new Error('Contenuto PDF non valido.');
+  }
+  const base64Part = rawDataUrl.slice(commaIdx + 1);
+  return `data:application/pdf;base64,${base64Part}`;
 }
 
 export async function processPlateImageFile(
@@ -90,5 +135,50 @@ export async function processPlateImageFile(
   return {
     dataUrl: optimized,
     fileName: file.name,
+  };
+}
+
+export async function processPlateAttachmentFile(
+  file: File
+): Promise<{ dataUrl: string; fileName: string; kind: 'image' | 'pdf'; numPages?: number }> {
+  if (!isSupportedPlateAttachmentFile(file)) {
+    throw new Error(
+      'Formato non supportato. Seleziona un file PNG, JPG o PDF.'
+    );
+  }
+
+  if (isPdfAttachmentFile(file)) {
+    if (file.size === 0) {
+      throw new Error('Il file PDF selezionato è vuoto.');
+    }
+    if (file.size > MAX_PDF_BYTES) {
+      throw new Error(
+        `Il file PDF supera il limite consentito (${(MAX_PDF_BYTES / 1_000_000).toFixed(1).replace('.', ',')} MB) per il salvataggio nell'archivio.`
+      );
+    }
+
+    const rawDataUrl = await readFileAsDataUrl(file);
+    const pdfDataUrl = normalizePdfDataUrl(rawDataUrl);
+    const bytes = decodeBase64DataUrlToBytes(pdfDataUrl);
+    if (!hasPdfMagicHeader(bytes)) {
+      throw new Error('Il file selezionato non è un documento PDF valido.');
+    }
+
+    const pdfDoc = await loadPdfDocumentFromBytes(bytes);
+    const numPages = pdfDoc.numPages;
+    await disposePdfDocument(pdfDoc);
+
+    return {
+      dataUrl: pdfDataUrl,
+      fileName: /\.pdf$/i.test(file.name) ? file.name : `${file.name}.pdf`,
+      kind: 'pdf',
+      numPages,
+    };
+  }
+
+  const processedImg = await processPlateImageFile(file);
+  return {
+    ...processedImg,
+    kind: 'image',
   };
 }

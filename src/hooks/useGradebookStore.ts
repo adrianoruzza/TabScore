@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import type {
   ArchivedStudentHistory,
   AuditCategory,
@@ -61,6 +61,227 @@ function makeLog(
 
 export type StoreMutationSource = 'init' | 'user' | 'cloud_restore';
 
+export type PlateImportMode = 'append' | 'replace';
+
+export interface PlateImportResult {
+  ok: boolean;
+  importedCount: number;
+  skippedCount: number;
+  error?: string;
+}
+
+function normalizePlateTitleKey(title: string): string {
+  return title.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+export function clonePlatesForImport(
+  sourcePlates: Plate[],
+  options?: {
+    includeAttachments?: boolean;
+    startOrder?: number;
+    reservedNumbers?: Set<number>;
+  }
+): Plate[] {
+  const sorted = sortPlates(sourcePlates);
+  const startOrder = options?.startOrder ?? 0;
+  const usedNumbers = new Set<number>(options?.reservedNumbers ?? []);
+  const includeAttachments = Boolean(options?.includeAttachments);
+
+  return sorted.map((src, idx) => {
+    let nextNumber = src.number;
+    if (usedNumbers.has(nextNumber)) {
+      const maxExisting = usedNumbers.size > 0 ? Math.max(...usedNumbers) : 0;
+      nextNumber = Math.max(1, maxExisting + 1);
+    }
+    usedNumbers.add(nextNumber);
+
+    const cloned: Plate = {
+      id: createId('plt'),
+      number: nextNumber,
+      order: startOrder + idx,
+      title: src.title,
+      assignedDate: src.assignedDate,
+      dueDate: src.dueDate,
+      notes: src.notes,
+      ...(includeAttachments && src.imageDataUrl
+        ? {
+            imageDataUrl: src.imageDataUrl,
+            ...(src.imageName ? { imageName: src.imageName } : {}),
+          }
+        : {}),
+    };
+    return cloned;
+  });
+}
+
+export function applyImportPlatesFromClass(
+  prevState: GradebookStoreState,
+  input: {
+    targetClassId: string;
+    sourceClassId: string;
+    mode: PlateImportMode;
+    includeAttachments?: boolean;
+    now?: string;
+  }
+): { nextState: GradebookStoreState; result: PlateImportResult } {
+  const { targetClassId, sourceClassId, mode, includeAttachments } = input;
+  if (targetClassId === sourceClassId) {
+    return {
+      nextState: prevState,
+      result: {
+        ok: false,
+        importedCount: 0,
+        skippedCount: 0,
+        error: 'Seleziona una classe sorgente diversa dalla classe di destinazione.',
+      },
+    };
+  }
+
+  const targetClass = prevState.classes.find((c) => c.id === targetClassId);
+  const sourceClass = prevState.classes.find((c) => c.id === sourceClassId);
+  if (!targetClass || !sourceClass) {
+    return {
+      nextState: prevState,
+      result: {
+        ok: false,
+        importedCount: 0,
+        skippedCount: 0,
+        error: 'Classe di origine o destinazione non trovata.',
+      },
+    };
+  }
+
+  const sortedSource = sortPlates(sourceClass.plates);
+  if (sortedSource.length === 0) {
+    return {
+      nextState: prevState,
+      result: {
+        ok: false,
+        importedCount: 0,
+        skippedCount: 0,
+        error: `La classe "${sourceClass.name}" non contiene tavole da importare.`,
+      },
+    };
+  }
+
+  const now = input.now ?? new Date().toISOString();
+
+  if (mode === 'replace') {
+    const clonedPlates = clonePlatesForImport(sortedSource, {
+      includeAttachments,
+      startOrder: 0,
+    });
+    const nextEvaluations: ClassData['evaluations'] = {};
+    for (const stuId of Object.keys(targetClass.evaluations)) {
+      nextEvaluations[stuId] = {};
+    }
+    const nextFolders = targetClass.folders.map((f) => ({
+      ...f,
+      plateIds: [],
+    }));
+
+    const nextState: GradebookStoreState = {
+      ...prevState,
+      classes: prevState.classes.map((c) =>
+        c.id === targetClassId
+          ? {
+              ...c,
+              plates: clonedPlates,
+              evaluations: nextEvaluations,
+              folders: nextFolders,
+              updatedAt: now,
+            }
+          : c
+      ),
+      auditLog: [
+        makeLog(
+          targetClass.id,
+          targetClass.name,
+          'tavola',
+          'Sostituzione elenco tavole',
+          `Importate ${clonedPlates.length} tavole da "${sourceClass.name}" in modalità sostituzione (studenti e cartelline preservati).`
+        ),
+        ...prevState.auditLog,
+      ].slice(0, 500),
+    };
+
+    return {
+      nextState,
+      result: {
+        ok: true,
+        importedCount: clonedPlates.length,
+        skippedCount: 0,
+      },
+    };
+  }
+
+  // Append mode: deduplicate by normalized plate title and avoid number collisions
+  const existingTitles = new Set(
+    targetClass.plates.map((p) => normalizePlateTitleKey(p.title))
+  );
+  const platesToAppend = sortedSource.filter(
+    (p) => !existingTitles.has(normalizePlateTitleKey(p.title))
+  );
+  const skippedCount = sortedSource.length - platesToAppend.length;
+
+  if (platesToAppend.length === 0) {
+    return {
+      nextState: prevState,
+      result: {
+        ok: false,
+        importedCount: 0,
+        skippedCount,
+        error: 'Tutte le tavole della classe selezionata sono già presenti in questa classe.',
+      },
+    };
+  }
+
+  const maxOrder = targetClass.plates.reduce(
+    (max, p, idx) => Math.max(max, p.order ?? idx),
+    -1
+  );
+  const reservedNumbers = new Set(targetClass.plates.map((p) => p.number));
+  const clonedPlates = clonePlatesForImport(platesToAppend, {
+    includeAttachments,
+    startOrder: maxOrder + 1,
+    reservedNumbers,
+  });
+
+  const nextState: GradebookStoreState = {
+    ...prevState,
+    classes: prevState.classes.map((c) =>
+      c.id === targetClassId
+        ? {
+            ...c,
+            plates: [...c.plates, ...clonedPlates],
+            updatedAt: now,
+          }
+        : c
+    ),
+    auditLog: [
+      makeLog(
+        targetClass.id,
+        targetClass.name,
+        'tavola',
+        'Importazione elenco tavole',
+        `Aggiunte ${clonedPlates.length} tavole da "${sourceClass.name}"${
+          skippedCount > 0 ? ` (${skippedCount} già presenti saltate)` : ''
+        }.`
+      ),
+      ...prevState.auditLog,
+    ].slice(0, 500),
+  };
+
+  return {
+    nextState,
+    result: {
+      ok: true,
+      importedCount: clonedPlates.length,
+      skippedCount,
+    },
+  };
+}
+
 export function useGradebookStore() {
   const [storeRecord, setStoreRecord] = useState<{
     state: GradebookStoreState;
@@ -72,6 +293,8 @@ export function useGradebookStore() {
     mutationSource: 'init',
   }));
   const state = storeRecord.state;
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
   const commit = useCallback(
     (updater: (prev: GradebookStoreState) => GradebookStoreState) => {
@@ -83,6 +306,7 @@ export function useGradebookStore() {
             ? { ...rawNext, auditLog: rawNext.auditLog.slice(0, 500) }
             : rawNext;
         saveStoreState(next);
+        stateRef.current = next;
         return {
           state: next,
           mutationSeq: prev.mutationSeq + 1,
@@ -116,13 +340,28 @@ export function useGradebookStore() {
   );
 
   const createClass = useCallback(
-    (input: { name: string; schoolYear: string; color?: string }) => {
+    (input: {
+      name: string;
+      schoolYear: string;
+      color?: string;
+      sourcePlatesClassId?: string;
+      includePlateAttachments?: boolean;
+    }) => {
       const now = new Date().toISOString();
       const createdId = createId('cls');
       commit((prev) => {
         const chosenColor =
           input.color ||
           pickNextDistinctClassColorId(prev.classes.map((c) => c.color));
+        const sourceClass = input.sourcePlatesClassId
+          ? prev.classes.find((c) => c.id === input.sourcePlatesClassId)
+          : undefined;
+        const importedPlates = sourceClass
+          ? clonePlatesForImport(sourceClass.plates, {
+              includeAttachments: input.includePlateAttachments,
+            })
+          : [];
+
         const newClass: ClassData = {
           id: createdId,
           name: input.name.trim(),
@@ -132,11 +371,15 @@ export function useGradebookStore() {
           updatedAt: now,
           settings: { ...DEFAULT_CLASS_SETTINGS },
           students: [],
-          plates: [],
+          plates: importedPlates,
           evaluations: {},
           folders: [],
           folderRecords: {},
         };
+        const platesNote =
+          sourceClass && importedPlates.length > 0
+            ? ` Con ${importedPlates.length} tavole importate da "${sourceClass.name}".`
+            : '';
         return {
           ...prev,
           activeClassId: newClass.id,
@@ -147,7 +390,7 @@ export function useGradebookStore() {
               newClass.name,
               'classe',
               'Creazione classe',
-              `Creata nuova classe "${newClass.name}" (${newClass.schoolYear}).`
+              `Creata nuova classe "${newClass.name}" (${newClass.schoolYear}).${platesNote}`
             ),
             ...prev.auditLog,
           ],
@@ -860,73 +1103,117 @@ export function useGradebookStore() {
       plateId: string,
       image: { dataUrl: string; fileName: string } | null
     ): boolean => {
-      let savedOk = true;
-      setStoreRecord((prev) => {
-        const target = prev.state.classes.find((c) => c.id === classId);
-        const existing = target?.plates.find((p) => p.id === plateId);
-        if (!target || !existing) return prev;
-        if (!image && !existing.imageDataUrl) return prev;
-        if (
-          image &&
-          existing.imageDataUrl === image.dataUrl &&
-          existing.imageName === image.fileName
-        ) {
-          return prev;
-        }
+      const current = stateRef.current;
+      const target = current.classes.find((c) => c.id === classId);
+      const existing = target?.plates.find((p) => p.id === plateId);
+      if (!target || !existing) return true;
+      if (!image && !existing.imageDataUrl) return true;
+      if (
+        image &&
+        existing.imageDataUrl === image.dataUrl &&
+        existing.imageName === image.fileName
+      ) {
+        return true;
+      }
 
-        const actionLabel = !image
-          ? 'Rimozione immagine tavola'
-          : existing.imageDataUrl
-          ? 'Sostituzione immagine tavola'
-          : 'Caricamento immagine tavola';
+      const isPdf = Boolean(
+        image?.dataUrl.startsWith('data:application/pdf')
+      );
+      const actionLabel = !image
+        ? 'Rimozione allegato tavola'
+        : existing.imageDataUrl
+        ? isPdf
+          ? 'Sostituzione PDF tavola'
+          : 'Sostituzione immagine tavola'
+        : isPdf
+        ? 'Caricamento PDF tavola'
+        : 'Caricamento immagine tavola';
 
-        const nextState: GradebookStoreState = {
-          ...prev.state,
-          classes: prev.state.classes.map((c) =>
-            c.id === classId
-              ? {
-                  ...c,
-                  plates: c.plates.map((p) => {
-                    if (p.id !== plateId) return p;
-                    if (image) {
-                      return {
-                        ...p,
-                        imageDataUrl: image.dataUrl,
-                        imageName: image.fileName,
-                      };
-                    }
-                    const rest = { ...p };
-                    delete rest.imageDataUrl;
-                    delete rest.imageName;
-                    return rest;
-                  }),
-                  updatedAt: new Date().toISOString(),
-                }
-              : c
+      const nextState: GradebookStoreState = {
+        ...current,
+        classes: current.classes.map((c) =>
+          c.id === classId
+            ? {
+                ...c,
+                plates: c.plates.map((p) => {
+                  if (p.id !== plateId) return p;
+                  if (image) {
+                    return {
+                      ...p,
+                      imageDataUrl: image.dataUrl,
+                      imageName: image.fileName,
+                    };
+                  }
+                  const rest = { ...p };
+                  delete rest.imageDataUrl;
+                  delete rest.imageName;
+                  return rest;
+                }),
+                updatedAt: new Date().toISOString(),
+              }
+            : c
+        ),
+        auditLog: [
+          makeLog(
+            classId,
+            target.name,
+            'tavola',
+            actionLabel,
+            image
+              ? `Tavola ${existing.number}: associato ${isPdf ? 'PDF' : 'allegato'} "${image.fileName}".`
+              : `Tavola ${existing.number}: rimosso allegato di anteprima.`
           ),
-          auditLog: [
-            makeLog(
-              classId,
-              target.name,
-              'tavola',
-              actionLabel,
-              image
-                ? `Tavola ${existing.number}: associata immagine "${image.fileName}".`
-                : `Tavola ${existing.number}: rimossa immagine di anteprima.`
-            ),
-            ...prev.state.auditLog,
-          ],
-        };
+          ...current.auditLog,
+        ].slice(0, 500),
+      };
 
-        savedOk = saveStoreState(nextState);
-        if (!savedOk) return prev;
-        return {
-          state: nextState,
-          mutationSeq: prev.mutationSeq + 1,
-          mutationSource: 'user',
-        };
+      const savedOk = saveStoreState(nextState);
+      if (!savedOk) return false;
+      stateRef.current = nextState;
+      setStoreRecord((prev) => ({
+        state: nextState,
+        mutationSeq: prev.mutationSeq + 1,
+        mutationSource: 'user',
+      }));
+      return true;
+    },
+    []
+  );
+
+  const importPlatesFromClass = useCallback(
+    (
+      targetClassId: string,
+      sourceClassId: string,
+      mode: PlateImportMode,
+      includeAttachments = false
+    ): PlateImportResult => {
+      const current = stateRef.current;
+      const { nextState, result } = applyImportPlatesFromClass(current, {
+        targetClassId,
+        sourceClassId,
+        mode,
+        includeAttachments,
       });
-      return savedOk;
+      if (!result.ok) {
+        return result;
+      }
+      const savedOk = saveStoreState(nextState);
+      if (!savedOk) {
+        return {
+          ok: false,
+          importedCount: 0,
+          skippedCount: 0,
+          error:
+            'Spazio locale insufficiente per copiare anche gli allegati. Riprova importando solo la struttura delle tavole.',
+        };
+      }
+      stateRef.current = nextState;
+      setStoreRecord((prev) => ({
+        state: nextState,
+        mutationSeq: prev.mutationSeq + 1,
+        mutationSource: 'user',
+      }));
+      return result;
     },
     []
   );
@@ -1659,6 +1946,7 @@ export function useGradebookStore() {
       };
 
       saveStoreState(nextState);
+      stateRef.current = nextState;
       setStoreRecord((prev) => ({
         state: nextState,
         mutationSeq: isCloudRestore ? prev.mutationSeq : prev.mutationSeq + 1,
@@ -1707,6 +1995,7 @@ export function useGradebookStore() {
     updatePlate,
     updatePlateTitle,
     updatePlateImage,
+    importPlatesFromClass,
     reorderPlate,
     deletePlate,
     setCellEvaluation,

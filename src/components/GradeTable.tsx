@@ -46,6 +46,8 @@ import {
   STATUS_META,
 } from '../utils/calculations';
 import { getClassColorOption } from '../utils/classColors';
+import { getGradeColorStyle } from '../utils/gradeColors';
+import { isPdfDataUrl } from '../utils/pdfViewer';
 import { CellPopover } from './CellPopover';
 import { FolderDatePopover } from './FolderDatePopover';
 import { FolderGradePopover } from './FolderGradePopover';
@@ -1052,57 +1054,8 @@ export function GradeTable({
                       } ${plateHeaderBg}`}
                     >
                       <div className={`relative flex h-full ${row1InnerMinHClass} flex-col justify-between`}>
-                        {/* Larger progressive number + interactive folded-corner preview + edit */}
-                        <div className="flex items-center justify-between gap-0.5">
-                          <span className="font-mono text-[14px] font-extrabold leading-none tracking-tight text-blue-950">
-                            T{p.number}
-                          </span>
-                          <div className="flex items-center gap-0.5">
-                            <button
-                              type="button"
-                              data-plate-preview-trigger={p.id}
-                              onClick={(e) => {
-                                const rect =
-                                  e.currentTarget.getBoundingClientRect();
-                                setActivePlatePreview((prev) =>
-                                  prev?.plateId === p.id
-                                    ? null
-                                    : { plateId: p.id, rect }
-                                );
-                              }}
-                              aria-expanded={
-                                activePlatePreview?.plateId === p.id
-                              }
-                              title={
-                                p.imageDataUrl
-                                  ? `Anteprima immagine Tav. ${p.number} (clicca per aprire o chiudere)`
-                                  : `Apri area anteprima / carica PNG o JPG per Tav. ${p.number}`
-                              }
-                              className={`rounded p-0.5 transition-colors ${
-                                activePlatePreview?.plateId === p.id
-                                  ? 'bg-blue-700 text-white'
-                                  : p.imageDataUrl
-                                  ? 'bg-blue-100 text-blue-800 hover:bg-blue-200'
-                                  : p.notes
-                                  ? 'text-amber-600 hover:bg-white hover:text-amber-700'
-                                  : 'text-slate-400 hover:bg-white hover:text-blue-700'
-                              }`}
-                            >
-                              <StickyNote className="h-3.5 w-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => onEditPlate(p)}
-                              title="Modifica dettagli e date tavola"
-                              className="rounded p-0.5 text-slate-500 hover:bg-white hover:text-blue-700"
-                            >
-                              <Pencil className="h-3 w-3" />
-                            </button>
-                          </div>
-                        </div>
-
-                        {/* Hover/Focus Reorder Controls (floating so T1/T2/T3 size is never compressed) */}
-                        <div className="absolute top-5 right-0.5 z-10 hidden items-center gap-0.5 rounded border border-slate-200 bg-white/95 px-0.5 py-0.5 shadow-sm group-hover/ph:flex group-focus-within/ph:flex">
+                        {/* Hover/Focus Reorder Controls (top-right so upper title & bottom info bar stay clear) */}
+                        <div className="absolute top-0.5 right-0.5 z-10 hidden items-center gap-0.5 rounded border border-slate-200 bg-white/95 px-0.5 py-0.5 shadow-sm group-hover/ph:flex group-focus-within/ph:flex">
                           <button
                             type="button"
                             disabled={col.plateIndex === 0}
@@ -1125,9 +1078,9 @@ export function GradeTable({
                           </button>
                         </div>
 
-                        {/* Plate Title: always 90° Vertical; clicking opens image if present, or inline title edit */}
+                        {/* Upper Area: Vertical Plate Title (90° Vertical) */}
                         {isEditingTitle ? (
-                          <div className="absolute top-5 left-0 z-40 w-[186px] rounded bg-white p-1 shadow-lg ring-1 ring-slate-300">
+                          <div className="absolute top-1 left-0 z-40 w-[186px] rounded bg-white p-1 shadow-lg ring-1 ring-slate-300">
                             <input
                               type="text"
                               autoFocus
@@ -1156,16 +1109,18 @@ export function GradeTable({
                             }}
                             title={
                               p.imageDataUrl
-                                ? `${p.title} — Clicca per aprire l’immagine ingrandita`
+                                ? isPdfDataUrl(p.imageDataUrl)
+                                  ? `${p.title} — Clicca per aprire il PDF`
+                                  : `${p.title} — Clicca per aprire l’immagine ingrandita`
                                 : `${p.title} — Clicca per modificare il titolo`
                             }
-                            className="flex min-h-0 flex-1 w-full items-end justify-start overflow-hidden rounded px-1 py-1 hover:bg-white/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-blue-600"
+                            className="flex min-h-0 flex-1 w-full items-end justify-start overflow-hidden rounded px-1 pt-1 pb-0.5 hover:bg-white/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-blue-600"
                           >
                             <span
                               style={{
                                 writingMode: 'vertical-rl',
                                 transform: 'rotate(180deg)',
-                                maxHeight: '124px',
+                                maxHeight: '116px',
                                 maxWidth: `${plateW - 8}px`,
                               }}
                               className="overflow-hidden text-ellipsis text-left text-[12px] font-medium leading-[1.18] text-slate-800 hover:text-blue-800"
@@ -1174,6 +1129,57 @@ export function GradeTable({
                             </span>
                           </button>
                         )}
+
+                        {/* Bottom Info Row: TXX + sheet preview icon + edit pencil */}
+                        <div className="flex shrink-0 items-center justify-between gap-0.5 pt-0.5">
+                          <span className="font-mono text-[14px] font-extrabold leading-none tracking-tight text-blue-950">
+                            T{p.number}
+                          </span>
+                          <div className="flex items-center gap-0.5">
+                            <button
+                              type="button"
+                              data-plate-preview-trigger={p.id}
+                              onClick={(e) => {
+                                const rect =
+                                  e.currentTarget.getBoundingClientRect();
+                                setActivePlatePreview((prev) =>
+                                  prev?.plateId === p.id
+                                    ? null
+                                    : { plateId: p.id, rect }
+                                );
+                              }}
+                              aria-expanded={
+                                activePlatePreview?.plateId === p.id
+                              }
+                              title={
+                                p.imageDataUrl
+                                  ? isPdfDataUrl(p.imageDataUrl)
+                                    ? `Anteprima PDF Tav. ${p.number} (clicca per aprire o chiudere)`
+                                    : `Anteprima immagine Tav. ${p.number} (clicca per aprire o chiudere)`
+                                  : `Apri area anteprima / carica PNG, JPG o PDF per Tav. ${p.number}`
+                              }
+                              className={`rounded p-0.5 transition-colors ${
+                                activePlatePreview?.plateId === p.id
+                                  ? 'bg-blue-700 text-white'
+                                  : p.imageDataUrl
+                                  ? 'bg-blue-100 text-blue-800 hover:bg-blue-200'
+                                  : p.notes
+                                  ? 'text-amber-600 hover:bg-white hover:text-amber-700'
+                                  : 'text-slate-400 hover:bg-white hover:text-blue-700'
+                              }`}
+                            >
+                              <StickyNote className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onEditPlate(p)}
+                              title="Modifica dettagli e date tavola"
+                              className="rounded p-0.5 text-slate-500 hover:bg-white hover:text-blue-700"
+                            >
+                              <Pencil className="h-3 w-3" />
+                            </button>
+                          </div>
+                        </div>
                       </div>
                     </th>
                   );
@@ -2053,12 +2059,15 @@ const FragmentPlateCells = memo(function FragmentPlateCells({
               e.currentTarget.getBoundingClientRect()
             )
           }
+          style={
+            cell.grade !== null ? getGradeColorStyle(cell.grade) : undefined
+          }
           title={`${studentName} · Tav. ${plateNumber} Voto: ${formatGradeLabel(
             cell.grade
           )}${cell.grade !== null ? ' (Canc per rimuovere)' : ''}`}
-          className={`flex h-full w-full items-center justify-center p-0 font-mono text-[13.5px] tabular-nums transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-600 ${
+          className={`flex h-full w-full items-center justify-center p-0 font-mono text-[13.5px] tabular-nums transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-600 ${
             cell.grade !== null
-              ? 'bg-sky-100/65 font-bold text-sky-950 hover:bg-sky-200/65'
+              ? `font-bold hover:brightness-95 ${isRowDimmed ? 'opacity-70' : ''}`
               : isRowHighlighted
               ? 'bg-blue-50/60 font-normal text-slate-400 hover:bg-sky-100/60'
               : 'bg-sky-50/45 font-normal text-slate-300 hover:bg-sky-100/50'
@@ -2275,47 +2284,81 @@ const FragmentFolderCells = memo(function FragmentFolderCells({
       </td>
 
       {/* 4. Voto finale (dopo le penalità, aggiornato automaticamente) */}
-      <td
-        style={{
-          width: dims.finalColW,
-          minWidth: dims.finalColW,
-          maxWidth: dims.finalColW,
-        }}
-        className={`h-[34px] border-r-2 border-b border-slate-200 border-r-blue-300 p-0 align-middle transition-colors duration-150 ${
-          isRowDimmed
-            ? 'bg-slate-200/80'
+      {(() => {
+        const isFolderNotDelivered =
+          status === 'da_consegnare' || status === 'non_consegnata';
+        const finalGradeStyle = getGradeColorStyle(finalGrade);
+        const tdClass = isFolderNotDelivered
+          ? isRowDimmed
+            ? 'bg-yellow-100/60'
             : isRowHighlighted
-            ? 'bg-blue-100'
-            : 'bg-blue-100/75'
-        } ${rowHighlightShadow}`}
-      >
-        <button
-          type="button"
-          onClick={(e) =>
-            onClickFinalGrade(
-              studentId,
-              folder.id,
-              e.currentTarget.getBoundingClientRect()
-            )
-          }
-          title={
-            isManualOverride
-              ? `${studentName} · ${folderTitle}: Voto finale (modifica manuale) — clicca per modificare o ripristinare calcolo automatico`
-              : `${studentName} · ${folderTitle}: Voto finale calcolato automaticamente dopo le penalità — clicca per modificare`
-          }
-          className={`relative flex h-full w-full items-center justify-center gap-[1px] px-0.5 py-0 font-mono text-[17px] font-extrabold leading-none tabular-nums text-blue-950 hover:bg-blue-200/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-700 ${
-            isFolderGradeSelected ? 'ring-2 ring-inset ring-blue-700' : ''
-          }`}
-        >
-          <span>{formatGradeLabel(finalGrade)}</span>
-          {isConfirmed && (
-            <Lock
-              className="h-2.5 w-2.5 shrink-0 text-blue-700"
-              aria-label="Valutazione confermata"
-            />
-          )}
-        </button>
-      </td>
+            ? 'bg-yellow-100'
+            : 'bg-yellow-100/90'
+          : isRowDimmed
+          ? 'bg-slate-200/80'
+          : isRowHighlighted
+          ? 'bg-blue-100'
+          : 'bg-blue-100/75';
+
+        return (
+          <td
+            style={{
+              width: dims.finalColW,
+              minWidth: dims.finalColW,
+              maxWidth: dims.finalColW,
+            }}
+            data-folder-not-delivered={isFolderNotDelivered ? 'true' : 'false'}
+            className={`h-[34px] border-r-2 border-b border-slate-200 border-r-blue-300 p-0 align-middle transition-colors duration-150 ${tdClass} ${rowHighlightShadow}`}
+          >
+            <button
+              type="button"
+              onClick={(e) =>
+                onClickFinalGrade(
+                  studentId,
+                  folder.id,
+                  e.currentTarget.getBoundingClientRect()
+                )
+              }
+              style={
+                !isFolderNotDelivered && finalGradeStyle
+                  ? finalGradeStyle
+                  : undefined
+              }
+              title={
+                isManualOverride
+                  ? `${studentName} · ${folderTitle}: Voto finale (modifica manuale) — clicca per modificare o ripristinare calcolo automatico`
+                  : isFolderNotDelivered
+                  ? `${studentName} · ${folderTitle}: Cartellina non ancora consegnata — voto finale provvisorio dopo le penalità (clicca per modificare)`
+                  : `${studentName} · ${folderTitle}: Voto finale calcolato automaticamente dopo le penalità — clicca per modificare`
+              }
+              className={`relative flex h-full w-full items-center justify-center gap-[1px] px-0.5 py-0 font-mono text-[17px] font-extrabold leading-none tabular-nums transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-700 ${
+                isFolderNotDelivered
+                  ? 'text-slate-900 hover:bg-yellow-200/70'
+                  : finalGradeStyle
+                  ? `hover:brightness-95 ${isRowDimmed ? 'opacity-75' : ''}`
+                  : 'text-blue-950 hover:bg-blue-200/70'
+              } ${isFolderGradeSelected ? 'ring-2 ring-inset ring-blue-700' : ''}`}
+            >
+              {isFolderNotDelivered && finalGradeStyle ? (
+                <span
+                  style={finalGradeStyle}
+                  className="inline-flex items-center justify-center rounded-[3px] px-1.5 py-0.5 font-mono text-[15px] font-extrabold leading-none shadow-2xs"
+                >
+                  {formatGradeLabel(finalGrade)}
+                </span>
+              ) : (
+                <span>{formatGradeLabel(finalGrade)}</span>
+              )}
+              {isConfirmed && (
+                <Lock
+                  className="h-2.5 w-2.5 shrink-0 opacity-85"
+                  aria-label="Valutazione confermata"
+                />
+              )}
+            </button>
+          </td>
+        );
+      })()}
     </>
   );
 });

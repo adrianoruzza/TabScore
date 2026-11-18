@@ -351,16 +351,34 @@ export function exportSingleClassJson(
   triggerJsonDownload(`registro_${safeName || 'classe'}_${datePart}.json`, archive);
 }
 
-export function exportFullBackupJson(state: GradebookStoreState): void {
-  const backup: FullBackupArchive = {
+export function createFullBackupArchive(
+  state: GradebookStoreState,
+  now: Date = new Date()
+): FullBackupArchive {
+  return {
     archiveType: 'full_backup',
     version: STORE_VERSION,
-    exportedAt: new Date().toISOString(),
+    exportedAt: now.toISOString(),
     classes: state.classes,
     auditLog: state.auditLog,
   };
-  const datePart = new Date().toISOString().slice(0, 10);
-  triggerJsonDownload(`backup_completo_tabscore_${datePart}.json`, backup);
+}
+
+export function buildTimestampedBackupFileName(date: Date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const yyyy = date.getFullYear();
+  const mm = pad(date.getMonth() + 1);
+  const dd = pad(date.getDate());
+  const hh = pad(date.getHours());
+  const min = pad(date.getMinutes());
+  const ss = pad(date.getSeconds());
+  return `backup_completo_tabscore_${yyyy}-${mm}-${dd}_${hh}-${min}-${ss}.json`;
+}
+
+export function exportFullBackupJson(state: GradebookStoreState): void {
+  const now = new Date();
+  const backup = createFullBackupArchive(state, now);
+  triggerJsonDownload(buildTimestampedBackupFileName(now), backup);
 }
 
 export function validateImportedArchive(

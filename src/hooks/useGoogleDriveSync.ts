@@ -28,6 +28,8 @@ import {
   saveSyncedBaseSnapshot,
   summarizeStoreState,
   syncArchiveToDrive,
+  uploadFullBackupToDriveFolder,
+  type DriveBackupUploadResult,
   type DriveSyncMetadata,
   type DriveSyncStatus,
   type LocalSafetyBackup,
@@ -1193,6 +1195,86 @@ export function useGoogleDriveSync({
     setPendingDialog(null);
   }, []);
 
+  /**
+   * Salva una copia del backup completo (.json) nella sottocartella
+   * SYNC_TabScore/BACKUP su Google Drive.
+   * Completamente isolato dallo stato di sincronizzazione operativa per evitare
+   * interferenze con tabscore_sync_archive.json o riattivazioni di cicli di sync.
+   */
+  const backupFullArchiveToDrive = useCallback(async (): Promise<
+    | { ok: true; result: DriveBackupUploadResult }
+    | { ok: false; error: string }
+  > => {
+    if (!accountRef.current) {
+      return {
+        ok: false,
+        error:
+          'Google Drive non è collegato. Accedi a Google Drive dalle impostazioni di sincronizzazione per salvare il backup in SYNC_TabScore/BACKUP.',
+      };
+    }
+    if (!isOnlineRef.current) {
+      return {
+        ok: false,
+        error:
+          'Connessione internet assente: impossibile salvare il backup su Google Drive in questo momento.',
+      };
+    }
+
+    try {
+      let accessToken = getInMemoryAccessToken();
+      if (!accessToken) {
+        const authRes = await signInWithGoogleDrive(false);
+        accountRef.current = authRes.account;
+        hasValidTokenRef.current = true;
+        setAccount(authRes.account);
+        setHasValidToken(true);
+        accessToken = authRes.accessToken;
+      }
+
+      const uploadOnce = (token: string) =>
+        uploadFullBackupToDriveFolder(token, storeStateRef.current, {
+          existingFolderId: syncMetaRef.current.folderId,
+          existingBackupFolderId: syncMetaRef.current.backupFolderId,
+        });
+
+      let result: DriveBackupUploadResult;
+      try {
+        result = await uploadOnce(accessToken);
+      } catch (err) {
+        if (err instanceof DriveApiError && err.code === 'unauthorized') {
+          invalidateInMemoryAccessToken();
+          const refreshed = await signInWithGoogleDrive(false);
+          accountRef.current = refreshed.account;
+          hasValidTokenRef.current = true;
+          setAccount(refreshed.account);
+          setHasValidToken(true);
+          result = await uploadOnce(refreshed.accessToken);
+        } else {
+          throw err;
+        }
+      }
+
+      // Cache folder IDs only — never touch pendingSync, localVersionSeq, or storeState
+      if (
+        syncMetaRef.current.folderId !== result.folderId ||
+        syncMetaRef.current.backupFolderId !== result.backupFolderId
+      ) {
+        updateMeta({
+          folderId: result.folderId,
+          backupFolderId: result.backupFolderId,
+        });
+      }
+
+      return { ok: true, result };
+    } catch (err) {
+      const msg =
+        err instanceof DriveApiError
+          ? err.message
+          : mapGoogleAuthError(err);
+      return { ok: false, error: msg };
+    }
+  }, [updateMeta]);
+
   return {
     account,
     hasValidToken,
@@ -1217,5 +1299,6 @@ export function useGoogleDriveSync({
     toggleAutoSync,
     confirmEnableAutoSync,
     dismissPendingDialog,
+    backupFullArchiveToDrive,
   };
 }

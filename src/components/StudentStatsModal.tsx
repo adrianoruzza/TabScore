@@ -26,6 +26,7 @@ import {
   type StudentPlateOutcomeKind,
   type StudentPlateTimelineItem,
 } from '../utils/calculations';
+import { getGradeColorStyle, getGradeColorTokens } from '../utils/gradeColors';
 
 interface StudentStatsModalProps {
   open: boolean;
@@ -449,14 +450,21 @@ export function StudentStatsModal({
                   tavole
                 </span>
               </div>
-              <div
-                className={`mt-0.5 font-mono text-xl font-bold leading-tight tabular-nums ${
-                  stats.average !== null && stats.average < 6
-                    ? 'text-rose-700'
-                    : 'text-slate-950'
-                }`}
-              >
-                {stats.average !== null ? formatDecimalIt(stats.average, 2) : '—'}
+              <div className="mt-1">
+                {stats.average !== null ? (
+                  <span
+                    style={getGradeColorStyle(stats.average, {
+                      includeBorder: true,
+                    })}
+                    className="inline-flex rounded border px-2 py-0.5 font-mono text-xl font-bold leading-tight tabular-nums"
+                  >
+                    {formatDecimalIt(stats.average, 2)}
+                  </span>
+                ) : (
+                  <span className="font-mono text-xl font-bold leading-tight text-slate-400">
+                    —
+                  </span>
+                )}
               </div>
               <div className="mt-0.5 truncate text-[10.5px] text-slate-500">
                 {stats.average !== null
@@ -488,27 +496,26 @@ export function StudentStatsModal({
                   </span>
                 ) : null}
               </div>
-              <div className="mt-0.5 flex items-baseline gap-1.5 font-mono leading-tight tabular-nums">
-                <span
-                  className={`text-xl font-extrabold ${
-                    focusedFolderSummary?.calc.finalGrade !== null &&
-                    focusedFolderSummary?.calc.finalGrade !== undefined &&
-                    focusedFolderSummary.calc.finalGrade < 6
-                      ? 'text-rose-700'
-                      : 'text-blue-950'
-                  }`}
-                >
-                  {focusedFolderSummary?.calc.finalGrade !== null &&
-                  focusedFolderSummary?.calc.finalGrade !== undefined
-                    ? formatGradeLabel(focusedFolderSummary.calc.finalGrade)
-                    : '—'}
-                </span>
+              <div className="mt-1 flex items-baseline gap-1.5 font-mono leading-tight tabular-nums">
                 {focusedFolderSummary?.calc.finalGrade !== null &&
-                  focusedFolderSummary?.calc.finalGrade !== undefined && (
+                focusedFolderSummary?.calc.finalGrade !== undefined ? (
+                  <>
+                    <span
+                      style={getGradeColorStyle(
+                        focusedFolderSummary.calc.finalGrade,
+                        { includeBorder: true }
+                      )}
+                      className="inline-flex rounded border px-2 py-0.5 text-xl font-extrabold"
+                    >
+                      {formatGradeLabel(focusedFolderSummary.calc.finalGrade)}
+                    </span>
                     <span className="text-[11px] font-medium text-blue-800">
                       ({formatDecimalIt(focusedFolderSummary.calc.finalGrade, 2)})
                     </span>
-                  )}
+                  </>
+                ) : (
+                  <span className="text-xl font-extrabold text-blue-950">—</span>
+                )}
               </div>
               <div className="mt-0.5 truncate font-sans text-[10.5px] tabular-nums text-blue-800">
                 {!focusedFolderSummary
@@ -548,15 +555,21 @@ export function StudentStatsModal({
               </div>
               {stats.maxGrade !== null && stats.minGrade !== null ? (
                 <>
-                  <div className="mt-0.5 flex items-baseline gap-1.5 font-mono text-xl font-bold leading-tight tabular-nums text-slate-950">
-                    <span className="text-emerald-800">
+                  <div className="mt-1 flex items-center gap-1.5 font-mono text-lg font-bold leading-tight tabular-nums">
+                    <span
+                      style={getGradeColorStyle(stats.maxGrade, {
+                        includeBorder: true,
+                      })}
+                      className="inline-flex rounded border px-1.5 py-0.5"
+                    >
                       {formatGradeLabel(stats.maxGrade)}
                     </span>
                     <span className="text-xs font-normal text-slate-400">/</span>
                     <span
-                      className={
-                        stats.minGrade < 6 ? 'text-rose-700' : 'text-slate-800'
-                      }
+                      style={getGradeColorStyle(stats.minGrade, {
+                        includeBorder: true,
+                      })}
+                      className="inline-flex rounded border px-1.5 py-0.5"
                     >
                       {formatGradeLabel(stats.minGrade)}
                     </span>
@@ -893,9 +906,11 @@ export function StudentStatsModal({
                                   cy={node.y}
                                   r={isSelected ? 5 : 4}
                                   fill={
-                                    node.plottedGrade < 6
+                                    getGradeColorTokens(node.plottedGrade)
+                                      ?.backgroundColor ??
+                                    (node.plottedGrade < 6
                                       ? '#e11d48'
-                                      : '#1d4ed8'
+                                      : '#1d4ed8')
                                   }
                                   stroke="#ffffff"
                                   strokeWidth={1.75}
@@ -954,23 +969,22 @@ export function StudentStatsModal({
                     </div>
                   </div>
 
-                  <div className="flex shrink-0 items-center gap-2 rounded border border-blue-200 bg-white px-2.5 py-1.5">
-                    {selectedItem.plottedGrade !== null ? (
-                      <div className="text-right leading-none">
-                        <span
-                          className={`font-mono text-xl font-extrabold tabular-nums ${
-                            selectedItem.plottedGrade < 6
-                              ? 'text-rose-700'
-                              : 'text-blue-950'
-                          }`}
-                        >
-                          {formatGradeLabel(selectedItem.plottedGrade)}
-                        </span>
-                        <span className="ml-1 font-mono text-[11px] text-slate-500">
-                          ({formatDecimalIt(selectedItem.plottedGrade, 2)})
-                        </span>
-                      </div>
-                    ) : (
+                  {selectedItem.plottedGrade !== null ? (
+                    <div
+                      style={getGradeColorStyle(selectedItem.plottedGrade, {
+                        includeBorder: true,
+                      })}
+                      className="flex shrink-0 items-center gap-1 rounded border px-2.5 py-1.5 text-right leading-none"
+                    >
+                      <span className="font-mono text-xl font-extrabold tabular-nums">
+                        {formatGradeLabel(selectedItem.plottedGrade)}
+                      </span>
+                      <span className="font-mono text-[11px] opacity-85">
+                        ({formatDecimalIt(selectedItem.plottedGrade, 2)})
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="flex shrink-0 items-center gap-2 rounded border border-blue-200 bg-white px-2.5 py-1.5">
                       <div className="flex items-center gap-1.5 font-mono text-xs font-bold text-slate-800">
                         {selectedItem.kind === 'not_delivered' && (
                           <XCircle className="h-4 w-4 text-rose-600" />
@@ -990,8 +1004,8 @@ export function StudentStatsModal({
                         )}
                         <span>{selectedOutcomeMeta.shortBadge}</span>
                       </div>
-                    )}
-                  </div>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1037,9 +1051,18 @@ export function StudentStatsModal({
                                 )}
                               </td>
                               <td className="px-2 py-1 text-right font-semibold text-slate-800">
-                                {calc.initialAverage !== null
-                                  ? formatDecimalIt(calc.initialAverage, 2)
-                                  : '—'}
+                                {calc.initialAverage !== null ? (
+                                  <span
+                                    style={getGradeColorStyle(
+                                      calc.initialAverage
+                                    )}
+                                    className="inline-flex rounded px-1.5 py-0.5 font-semibold"
+                                  >
+                                    {formatDecimalIt(calc.initialAverage, 2)}
+                                  </span>
+                                ) : (
+                                  '—'
+                                )}
                               </td>
                               <td className="px-2 py-1 text-right text-slate-600">
                                 {calc.rawDelayDays > 0
@@ -1052,12 +1075,17 @@ export function StudentStatsModal({
                                   : '0,00'}
                               </td>
                               <td className="px-2.5 py-1 text-right font-bold text-blue-950">
-                                {calc.finalGrade !== null
-                                  ? `${formatGradeLabel(calc.finalGrade)} (${formatDecimalIt(
-                                      calc.finalGrade,
-                                      2
-                                    )})`
-                                  : '—'}
+                                {calc.finalGrade !== null ? (
+                                  <span
+                                    style={getGradeColorStyle(calc.finalGrade)}
+                                    className="inline-flex rounded px-1.5 py-0.5 font-bold"
+                                  >
+                                    {formatGradeLabel(calc.finalGrade)} (
+                                    {formatDecimalIt(calc.finalGrade, 2)})
+                                  </span>
+                                ) : (
+                                  '—'
+                                )}
                               </td>
                             </tr>
                           );

@@ -682,6 +682,7 @@ export default function App() {
         onUpdateClass={store.updateClass}
         onDeleteClass={(cls) => setConfirmTarget({ kind: 'class', cls })}
         onImportStudents={store.importStudents}
+        onImportPlatesFromClass={store.importPlatesFromClass}
         onClose={() => setClassManagerOpen(false)}
       />
 
@@ -864,6 +865,14 @@ export default function App() {
         open={archiveOpen}
         storeState={state}
         activeClass={activeClass}
+        driveConnected={Boolean(driveSync.account)}
+        driveAccountEmail={driveSync.account?.email ?? null}
+        isOnline={driveSync.isOnline}
+        onBackupFullToDrive={driveSync.backupFullArchiveToDrive}
+        onOpenDriveSettings={() => {
+          setArchiveOpen(false);
+          openSettingsModal('drive');
+        }}
         onImportSingleClass={store.importSingleClass}
         onImportFullBackup={store.importFullBackup}
         onLogExport={(action, details) =>

@@ -1,5 +1,6 @@
 import {
   Check,
+  FileText,
   ImagePlus,
   Maximize2,
   Pencil,
@@ -16,7 +17,14 @@ import {
   type DragEvent,
 } from 'react';
 import type { Plate } from '../types/gradebook';
-import { processPlateImageFile } from '../utils/imageUpload';
+import { processPlateAttachmentFile } from '../utils/imageUpload';
+import {
+  disposePdfDocument,
+  isPdfDataUrl,
+  loadPdfDocumentFromDataUrl,
+  renderPdfPageToCanvas,
+  type PdfDocumentProxy,
+} from '../utils/pdfViewer';
 
 interface PlatePreviewPopoverProps {
   plate: Plate;
@@ -39,6 +47,7 @@ export function PlatePreviewPopover({
 }: PlatePreviewPopoverProps) {
   const popoverRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const pdfCanvasRef = useRef<HTMLCanvasElement>(null);
 
   const [pos, setPos] = useState<{ top: number; left: number }>({
     top: anchorRect.bottom + 4,
@@ -49,12 +58,65 @@ export function PlatePreviewPopover({
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState('');
+  const [pdfPageCount, setPdfPageCount] = useState<number | null>(null);
+  const [pdfPreviewLoading, setPdfPreviewLoading] = useState(false);
+
+  const isPdf = isPdfDataUrl(plate.imageDataUrl);
 
   useEffect(() => {
     setTitleDraft(plate.title);
     setEditingTitle(false);
     setError('');
   }, [plate.id, plate.title]);
+
+  useEffect(() => {
+    const dataUrl = plate.imageDataUrl;
+    if (!dataUrl || !isPdfDataUrl(dataUrl)) {
+      setPdfPageCount(null);
+      setPdfPreviewLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    let activeDoc: PdfDocumentProxy | null = null;
+    setPdfPreviewLoading(true);
+    setPdfPageCount(null);
+
+    void (async () => {
+      try {
+        const doc = await loadPdfDocumentFromDataUrl(dataUrl);
+        if (cancelled) {
+          await disposePdfDocument(doc);
+          return;
+        }
+        activeDoc = doc;
+        setPdfPageCount(doc.numPages);
+        const canvas = pdfCanvasRef.current;
+        if (canvas) {
+          await renderPdfPageToCanvas(doc, 1, canvas, 300);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(
+            err instanceof Error
+              ? err.message
+              : 'Impossibile visualizzare il file PDF allegato.'
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setPdfPreviewLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (activeDoc) {
+        void disposePdfDocument(activeDoc);
+      }
+    };
+  }, [plate.id, plate.imageDataUrl]);
 
   useLayoutEffect(() => {
     const el = popoverRef.current;
@@ -106,18 +168,21 @@ export function PlatePreviewPopover({
     setError('');
     setIsProcessing(true);
     try {
-      const processed = await processPlateImageFile(file);
-      const saved = onUpdateImage(processed);
+      const processed = await processPlateAttachmentFile(file);
+      const saved = onUpdateImage({
+        dataUrl: processed.dataUrl,
+        fileName: processed.fileName,
+      });
       if (!saved) {
         setError(
-          'Spazio di archiviazione locale esaurito. Rimuovi qualche immagine prima di caricarne altre.'
+          'Spazio di archiviazione locale esaurito. Rimuovi qualche allegato o usa un file più leggero.'
         );
       }
     } catch (err) {
       setError(
         err instanceof Error
           ? err.message
-          : 'Errore durante il caricamento dell’immagine.'
+          : 'Errore durante il caricamento del file.'
       );
     } finally {
       setIsProcessing(false);
@@ -156,7 +221,7 @@ export function PlatePreviewPopover({
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/png,image/jpeg,.png,.jpg,.jpeg"
+          accept="image/png,image/jpeg,application/pdf,.png,.jpg,.jpeg,.pdf"
           onChange={handleFileInputChange}
           className="hidden"
         />
@@ -230,37 +295,66 @@ export function PlatePreviewPopover({
           </button>
         </div>
 
-        {/* Image Area */}
+        {/* Attachment Preview Area (PNG / JPG / PDF) */}
         <div className="mt-3 space-y-2.5">
           {plate.imageDataUrl ? (
             <div className="space-y-2">
               <div className="group relative overflow-hidden rounded-md border border-slate-200 bg-slate-50">
-                <img
-                  src={plate.imageDataUrl}
-                  alt={`Anteprima ${plate.title}`}
-                  onClick={() => {
-                    onClose();
-                    onOpenFullViewer();
-                  }}
-                  className="max-h-[220px] w-full cursor-zoom-in object-contain"
-                />
+                {isPdf ? (
+                  <div
+                    onClick={() => {
+                      onClose();
+                      onOpenFullViewer();
+                    }}
+                    className="relative flex max-h-[220px] min-h-[140px] w-full cursor-zoom-in items-center justify-center overflow-hidden bg-slate-100 p-2"
+                  >
+                    <canvas
+                      ref={pdfCanvasRef}
+                      className="max-h-[204px] max-w-full rounded border border-slate-200 bg-white shadow-sm object-contain"
+                    />
+                    {pdfPreviewLoading && (
+                      <div className="absolute inset-0 flex items-center justify-center bg-white/80 text-xs font-medium text-slate-600">
+                        Caricamento anteprima PDF...
+                      </div>
+                    )}
+                    <div className="absolute top-2 left-2 inline-flex items-center gap-1 rounded border border-slate-300 bg-white/95 px-1.5 py-0.5 text-[10px] font-bold text-slate-800 shadow-sm">
+                      <FileText className="h-3 w-3 text-rose-600" />
+                      <span>
+                        PDF
+                        {pdfPageCount
+                          ? ` · ${pdfPageCount} ${pdfPageCount === 1 ? 'pag.' : 'pagg.'}`
+                          : ''}
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <img
+                    src={plate.imageDataUrl}
+                    alt={`Anteprima ${plate.title}`}
+                    onClick={() => {
+                      onClose();
+                      onOpenFullViewer();
+                    }}
+                    className="max-h-[220px] w-full cursor-zoom-in object-contain"
+                  />
+                )}
                 <button
                   type="button"
                   onClick={() => {
                     onClose();
                     onOpenFullViewer();
                   }}
-                  title="Ingrandisci immagine"
+                  title={isPdf ? 'Apri PDF a schermo intero' : 'Ingrandisci immagine'}
                   className="absolute right-2 bottom-2 inline-flex items-center gap-1 rounded border border-slate-300 bg-white/95 px-2 py-1 text-[11px] font-medium text-slate-800 shadow-sm hover:bg-white"
                 >
                   <Maximize2 className="h-3 w-3" />
-                  Ingrandisci
+                  {isPdf ? 'Apri PDF' : 'Ingrandisci'}
                 </button>
               </div>
 
               <div className="flex items-center justify-between gap-2">
                 <span className="min-w-0 truncate text-[11px] text-slate-500">
-                  {plate.imageName || 'Immagine allegata'}
+                  {plate.imageName || (isPdf ? 'Documento PDF allegato' : 'Immagine allegata')}
                 </span>
                 <div className="flex shrink-0 items-center gap-1.5">
                   <button
@@ -303,10 +397,10 @@ export function PlatePreviewPopover({
             >
               <ImagePlus className="h-6 w-6 text-slate-400" />
               <p className="mt-1.5 text-xs font-medium text-slate-700">
-                Nessuna immagine associata
+                Nessun file associato
               </p>
               <p className="mt-0.5 text-[11px] text-slate-500">
-                Carica un’anteprima in formato PNG o JPG
+                Carica o trascina un’anteprima PNG, JPG o PDF
               </p>
               <button
                 type="button"
@@ -315,7 +409,7 @@ export function PlatePreviewPopover({
                 className="mt-3 inline-flex min-h-9 items-center gap-1.5 rounded-md bg-blue-700 px-3.5 py-1.5 text-xs font-medium text-white hover:bg-blue-800 disabled:opacity-50"
               >
                 <ImagePlus className="h-3.5 w-3.5" />
-                {isProcessing ? 'Caricamento...' : 'Carica immagine (PNG / JPG)'}
+                {isProcessing ? 'Caricamento...' : 'Carica (PNG / JPG / PDF)'}
               </button>
             </div>
           )}

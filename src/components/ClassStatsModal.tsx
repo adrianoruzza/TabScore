@@ -10,6 +10,7 @@ import {
   formatGradeLabel,
   sortPlates,
 } from '../utils/calculations';
+import { getGradeColorStyle } from '../utils/gradeColors';
 
 interface ClassStatsModalProps {
   open: boolean;
@@ -324,10 +325,21 @@ export function ClassStatsModal({
                   <div className="text-[11px] font-medium text-slate-500">
                     Media voti tavole
                   </div>
-                  <div className="mt-1 font-mono text-2xl font-bold tabular-nums text-slate-900">
-                    {stats.overallAvg !== null
-                      ? formatDecimalIt(stats.overallAvg, 2)
-                      : '—'}
+                  <div className="mt-1">
+                    {stats.overallAvg !== null ? (
+                      <span
+                        style={getGradeColorStyle(stats.overallAvg, {
+                          includeBorder: true,
+                        })}
+                        className="inline-flex rounded border px-2 py-0.5 font-mono text-2xl font-bold tabular-nums"
+                      >
+                        {formatDecimalIt(stats.overallAvg, 2)}
+                      </span>
+                    ) : (
+                      <span className="font-mono text-2xl font-bold text-slate-400">
+                        —
+                      </span>
+                    )}
                   </div>
                   <div className="mt-1 font-mono text-[11px] tabular-nums text-slate-500">
                     {stats.gradedCount} voti inseriti
@@ -497,14 +509,29 @@ export function ClassStatsModal({
                               {row.daConsegnare}
                             </td>
                             <td className="px-3 py-2 text-right text-slate-700">
-                              {row.initialAvg !== null
-                                ? formatDecimalIt(row.initialAvg, 2)
-                                : '—'}
+                              {row.initialAvg !== null ? (
+                                <span
+                                  style={getGradeColorStyle(row.initialAvg)}
+                                  className="inline-flex rounded px-1.5 py-0.5 font-semibold"
+                                >
+                                  {formatDecimalIt(row.initialAvg, 2)}
+                                </span>
+                              ) : (
+                                '—'
+                              )}
                             </td>
                             <td className="px-3 py-2 text-right font-bold text-blue-900">
-                              {row.finalAvg !== null
-                                ? `${formatDecimalIt(row.finalAvg, 2)} (${row.finalCount})`
-                                : '—'}
+                              {row.finalAvg !== null ? (
+                                <span
+                                  style={getGradeColorStyle(row.finalAvg)}
+                                  className="inline-flex rounded px-1.5 py-0.5 font-bold"
+                                >
+                                  {formatDecimalIt(row.finalAvg, 2)} (
+                                  {row.finalCount})
+                                </span>
+                              ) : (
+                                '—'
+                              )}
                             </td>
                           </tr>
                         ))}
@@ -567,7 +594,16 @@ export function ClassStatsModal({
                             {row.gradedCount}/{stats.studentCount}
                           </td>
                           <td className="px-3 py-2 text-right font-bold text-slate-900">
-                            {row.avg !== null ? formatDecimalIt(row.avg, 2) : '—'}
+                            {row.avg !== null ? (
+                              <span
+                                style={getGradeColorStyle(row.avg)}
+                                className="inline-flex rounded px-1.5 py-0.5 font-bold"
+                              >
+                                {formatDecimalIt(row.avg, 2)}
+                              </span>
+                            ) : (
+                              '—'
+                            )}
                           </td>
                         </tr>
                       ))}
@@ -669,11 +705,31 @@ export function ClassStatsModal({
                               {row.gradedCount}/{stats.plateCount}
                             </td>
                             <td className="px-3 py-2 text-right font-bold text-slate-900">
-                              {row.avg !== null ? formatDecimalIt(row.avg, 2) : '—'}
+                              {row.avg !== null ? (
+                                <span
+                                  style={getGradeColorStyle(row.avg)}
+                                  className="inline-flex rounded px-1.5 py-0.5 font-bold"
+                                >
+                                  {formatDecimalIt(row.avg, 2)}
+                                </span>
+                              ) : (
+                                '—'
+                              )}
                             </td>
                             {stats.lastFolder && (
                               <td className="px-3 py-2 text-right font-bold text-blue-900">
-                                {formatGradeLabel(row.lastFolderGrade)}
+                                {row.lastFolderGrade !== null ? (
+                                  <span
+                                    style={getGradeColorStyle(
+                                      row.lastFolderGrade
+                                    )}
+                                    className="inline-flex rounded px-1.5 py-0.5 font-bold"
+                                  >
+                                    {formatGradeLabel(row.lastFolderGrade)}
+                                  </span>
+                                ) : (
+                                  '—'
+                                )}
                               </td>
                             )}
                           </tr>

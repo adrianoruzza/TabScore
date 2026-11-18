@@ -137,6 +137,7 @@ export function FolderDatePopover({
             <input
               type="date"
               value={actualDeliveryDate}
+              title="Premi Canc per rimuovere la data"
               onChange={(e) => {
                 const nextDate = e.target.value;
                 onUpdate({
@@ -146,6 +147,15 @@ export function FolderDatePopover({
                       ? 'consegnata'
                       : status,
                 });
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Delete') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (actualDeliveryDate) {
+                    onUpdate({ actualDeliveryDate: '' });
+                  }
+                }
               }}
               className="mt-1 h-9 w-full rounded border border-slate-300 px-2.5 font-mono text-xs text-slate-900 focus:border-blue-600 focus:outline-none"
             />

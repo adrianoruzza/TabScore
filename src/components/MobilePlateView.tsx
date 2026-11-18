@@ -1,5 +1,6 @@
 import {
   BarChart3,
+  FileText,
   FolderPlus,
   Image as ImageIcon,
   Lock,
@@ -31,6 +32,8 @@ import {
   sortPlates,
   STATUS_META,
 } from '../utils/calculations';
+import { getGradeColorStyle } from '../utils/gradeColors';
+import { isPdfDataUrl } from '../utils/pdfViewer';
 import { PlateImageViewerModal } from './PlateImageViewerModal';
 import { RapidGradePicker } from './RapidGradePicker';
 
@@ -231,8 +234,17 @@ export function MobilePlateView({
               onClick={() => setViewerOpen(true)}
               className="inline-flex h-8 w-full items-center justify-center gap-1.5 rounded border border-blue-300 bg-white px-2.5 text-xs font-semibold text-blue-800 hover:bg-blue-50 whitespace-nowrap"
             >
-              <ImageIcon className="h-3.5 w-3.5 text-blue-700" />
-              Visualizza immagine tavola
+              {isPdfDataUrl(activePlate.imageDataUrl) ? (
+                <>
+                  <FileText className="h-3.5 w-3.5 text-rose-600" />
+                  Visualizza PDF tavola
+                </>
+              ) : (
+                <>
+                  <ImageIcon className="h-3.5 w-3.5 text-blue-700" />
+                  Visualizza immagine tavola
+                </>
+              )}
             </button>
           )}
           {activeFolder && onOpenFolderStats && (
@@ -396,9 +408,14 @@ export function MobilePlateView({
                         currentGrade: cell.grade,
                       })
                     }
+                    style={
+                      cell.grade !== null
+                        ? getGradeColorStyle(cell.grade, { includeBorder: true })
+                        : undefined
+                    }
                     className={`h-8 min-w-[48px] rounded border px-2 font-mono text-sm font-bold tabular-nums ${
                       cell.grade !== null
-                        ? 'border-sky-300 bg-sky-100 text-sky-950'
+                        ? 'hover:brightness-95'
                         : 'border-sky-200 bg-sky-50 text-slate-400'
                     }`}
                   >
@@ -421,6 +438,11 @@ export function MobilePlateView({
             const hasSupportNeeds = Boolean(
               stu.supportNeeds && stu.supportNeeds.length > 0
             );
+            const isFolderNotDelivered =
+              rec.status === 'da_consegnare' || rec.status === 'non_consegnata';
+            const finalStyle = getGradeColorStyle(calc.finalGrade, {
+              includeBorder: true,
+            });
             return (
               <button
                 key={stu.id}
@@ -468,12 +490,25 @@ export function MobilePlateView({
                     )}
                   </div>
                 </div>
-                <div className="flex flex-col items-end shrink-0">
+                <div
+                  className={`flex flex-col items-end shrink-0 rounded px-2 py-1 ${
+                    isFolderNotDelivered ? 'border border-yellow-300 bg-yellow-100/90' : ''
+                  }`}
+                >
                   <span className="text-[9px] font-semibold uppercase tracking-wide text-blue-700">
                     Voto finale
                   </span>
-                  <div className="flex items-center gap-1 font-mono text-lg font-extrabold leading-none text-blue-950">
-                    <span>{formatGradeLabel(calc.finalGrade)}</span>
+                  <div className="mt-0.5 flex items-center gap-1 font-mono text-lg font-extrabold leading-none">
+                    <span
+                      style={finalStyle}
+                      className={
+                        finalStyle
+                          ? 'rounded border px-1.5 py-0.5 text-base font-extrabold leading-none'
+                          : 'text-blue-950'
+                      }
+                    >
+                      {formatGradeLabel(calc.finalGrade)}
+                    </span>
                     {calc.isConfirmed && <Lock className="h-3.5 w-3.5 text-blue-700" />}
                   </div>
                 </div>

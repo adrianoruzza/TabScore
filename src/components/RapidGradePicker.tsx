@@ -1,6 +1,7 @@
 import { ArrowLeft, Eraser, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { formatDecimalIt, formatGradeLabel } from '../utils/calculations';
+import { getGradeColorStyle } from '../utils/gradeColors';
 
 interface RapidGradePickerProps {
   currentGrade: number | null;
@@ -227,10 +228,11 @@ export function RapidGradePicker({
                       onSelect(num);
                     }
                   }}
-                  className={`flex h-11 touch-none items-center justify-center rounded-md border font-mono text-base font-semibold tabular-nums transition-colors ${
+                  style={getGradeColorStyle(num, { includeBorder: true })}
+                  className={`flex h-11 touch-none items-center justify-center rounded-md border font-mono text-base font-bold tabular-nums transition-all hover:brightness-95 active:brightness-90 ${
                     isSelected
-                      ? 'border-blue-700 bg-blue-700 text-white'
-                      : 'border-sky-200 bg-sky-50 text-slate-900 hover:border-sky-400 hover:bg-sky-100 active:bg-sky-200'
+                      ? 'ring-2 ring-blue-700 ring-offset-1'
+                      : ''
                   }`}
                 >
                   {num}
@@ -276,23 +278,18 @@ export function RapidGradePicker({
                   type="button"
                   data-fraction-val={opt.value}
                   onClick={() => onSelect(opt.value)}
-                  className={`flex min-h-[52px] flex-col items-center justify-center rounded-md border px-1 py-1.5 font-mono tabular-nums transition-colors ${
+                  style={getGradeColorStyle(opt.value, { includeBorder: true })}
+                  className={`flex min-h-[52px] flex-col items-center justify-center rounded-md border px-1 py-1.5 font-mono tabular-nums transition-all hover:brightness-95 ${
                     isHovered || isSelected
-                      ? 'border-blue-700 bg-blue-700 text-white ring-2 ring-blue-300'
-                      : 'border-sky-200 bg-sky-50 text-slate-900 hover:border-sky-400 hover:bg-sky-100'
+                      ? 'ring-2 ring-blue-700 ring-offset-1 brightness-95'
+                      : ''
                   }`}
                 >
                   <span className="text-sm font-bold leading-none">
                     {opt.label}
                   </span>
                   {opt.subLabel && (
-                    <span
-                      className={`mt-1 text-[10px] leading-none ${
-                        isHovered || isSelected
-                          ? 'text-blue-100'
-                          : 'text-slate-500'
-                      }`}
-                    >
+                    <span className="mt-1 text-[10px] leading-none opacity-85">
                       ({opt.subLabel})
                     </span>
                   )}

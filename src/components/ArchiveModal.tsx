@@ -1,5 +1,15 @@
-import { Download, FileSpreadsheet, HardDriveDownload, Upload, X } from 'lucide-react';
+import {
+  CheckCircle2,
+  CloudUpload,
+  Download,
+  FileSpreadsheet,
+  HardDriveDownload,
+  Loader2,
+  Upload,
+  X,
+} from 'lucide-react';
 import { useEffect, useRef, useState, type ChangeEvent } from 'react';
+import type { DriveBackupUploadResult } from '../services/googleDriveSync';
 import type {
   ClassData,
   FullBackupArchive,
@@ -17,6 +27,13 @@ interface ArchiveModalProps {
   open: boolean;
   storeState: GradebookStoreState;
   activeClass: ClassData | null;
+  driveConnected: boolean;
+  driveAccountEmail?: string | null;
+  isOnline: boolean;
+  onBackupFullToDrive: () => Promise<
+    { ok: true; result: DriveBackupUploadResult } | { ok: false; error: string }
+  >;
+  onOpenDriveSettings: () => void;
   onImportSingleClass: (
     archive: SingleClassArchive,
     mode: 'add_new' | 'replace_existing'
@@ -34,6 +51,11 @@ export function ArchiveModal({
   open,
   storeState,
   activeClass,
+  driveConnected,
+  driveAccountEmail,
+  isOnline,
+  onBackupFullToDrive,
+  onOpenDriveSettings,
   onImportSingleClass,
   onImportFullBackup,
   onLogExport,
@@ -43,13 +65,39 @@ export function ArchiveModal({
   const [importError, setImportError] = useState('');
   const [importSuccess, setImportSuccess] = useState('');
   const [pendingImport, setPendingImport] = useState<PendingImport | null>(null);
+  const [driveBackupBusy, setDriveBackupBusy] = useState(false);
+  const [driveBackupSuccess, setDriveBackupSuccess] = useState<string | null>(null);
+  const [driveBackupError, setDriveBackupError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
     setImportError('');
     setImportSuccess('');
     setPendingImport(null);
+    setDriveBackupBusy(false);
+    setDriveBackupSuccess(null);
+    setDriveBackupError(null);
   }, [open]);
+
+  const handleDriveFullBackup = async () => {
+    if (driveBackupBusy) return;
+    setDriveBackupBusy(true);
+    setDriveBackupError(null);
+    setDriveBackupSuccess(null);
+    try {
+      const res = await onBackupFullToDrive();
+      if (res.ok) {
+        const sizeKb = Math.max(1, Math.round(res.result.sizeBytes / 1024));
+        setDriveBackupSuccess(
+          `Backup salvato in SYNC_TabScore/BACKUP/${res.result.fileName} (${sizeKb} KB).`
+        );
+      } else {
+        setDriveBackupError(res.error);
+      }
+    } finally {
+      setDriveBackupBusy(false);
+    }
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -189,30 +237,83 @@ export function ArchiveModal({
                 <Download className="h-4 w-4 text-slate-400" />
               </button>
 
-              <button
-                type="button"
-                onClick={() => {
-                  exportFullBackupJson(storeState);
-                  onLogExport(
-                    'Backup completo (.json)',
-                    `Esportato backup completo con ${storeState.classes.length} classi.`
-                  );
-                }}
-                className="flex items-center justify-between rounded-md border border-slate-200 bg-white px-4 py-3 text-left hover:border-slate-400 hover:bg-slate-50"
-              >
-                <div className="flex items-center gap-3">
-                  <HardDriveDownload className="h-5 w-5 text-slate-700" />
-                  <div>
-                    <div className="text-sm font-semibold text-slate-900">
-                      Backup completo di tutte le classi (.json)
-                    </div>
-                    <div className="text-xs text-slate-500">
-                      Archivio integrale di {storeState.classes.length} classi e cronologia operazioni
+              <div className="space-y-2 rounded-md border border-slate-200 bg-slate-50/60 p-2.5">
+                <button
+                  type="button"
+                  disabled={driveBackupBusy}
+                  onClick={() => void handleDriveFullBackup()}
+                  className="flex w-full items-center justify-between rounded-md border border-slate-200 bg-white px-4 py-3 text-left hover:border-blue-400 hover:bg-blue-50/40 disabled:cursor-wait disabled:opacity-70"
+                >
+                  <div className="flex items-center gap-3">
+                    {driveBackupBusy ? (
+                      <Loader2 className="h-5 w-5 animate-spin text-blue-700" />
+                    ) : (
+                      <CloudUpload className="h-5 w-5 text-blue-700" />
+                    )}
+                    <div>
+                      <div className="text-sm font-semibold text-slate-900">
+                        Backup completo di tutte le classi (.json)
+                      </div>
+                      <div className="text-xs text-slate-500">
+                        {driveBackupBusy
+                          ? 'Salvataggio in corso nella cartella SYNC_TabScore/BACKUP...'
+                          : driveConnected
+                          ? `Salva in Google Drive → SYNC_TabScore/BACKUP (${storeState.classes.length} classi${
+                              driveAccountEmail ? ` · ${driveAccountEmail}` : ''
+                            })`
+                          : `Archivio integrale di ${storeState.classes.length} classi in SYNC_TabScore/BACKUP (Google Drive)`}
+                      </div>
                     </div>
                   </div>
+                  <Upload className="h-4 w-4 text-slate-400" />
+                </button>
+
+                <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+                  <span className="text-[11px] text-slate-500">
+                    {!isOnline
+                      ? 'Offline: il salvataggio in SYNC_TabScore/BACKUP richiede connessione.'
+                      : driveConnected
+                      ? 'Backup salvato separatamente dal file di sincronizzazione automatica.'
+                      : 'Google Drive non collegato.'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      exportFullBackupJson(storeState);
+                      onLogExport(
+                        'Backup completo locale (.json)',
+                        `Scaricato backup completo locale con ${storeState.classes.length} classi.`
+                      );
+                    }}
+                    className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-600 underline-offset-2 hover:text-slate-900 hover:underline"
+                  >
+                    <HardDriveDownload className="h-3.5 w-3.5" />
+                    Scarica copia locale (.json)
+                  </button>
                 </div>
-                <Download className="h-4 w-4 text-slate-400" />
-              </button>
+
+                {driveBackupSuccess && (
+                  <div className="flex items-start gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800">
+                    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+                    <span>{driveBackupSuccess}</span>
+                  </div>
+                )}
+
+                {driveBackupError && (
+                  <div className="space-y-2 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-800">
+                    <div>{driveBackupError}</div>
+                    {!driveConnected && (
+                      <button
+                        type="button"
+                        onClick={onOpenDriveSettings}
+                        className="inline-flex items-center gap-1 rounded border border-rose-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-rose-800 hover:bg-rose-100"
+                      >
+                        Apri impostazioni Google Drive
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           </section>
 

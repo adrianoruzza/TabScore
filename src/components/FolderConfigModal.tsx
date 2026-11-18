@@ -174,7 +174,17 @@ export function FolderConfigModal({
               <input
                 type="date"
                 value={dueDate}
+                title="Premi Canc per rimuovere la data"
                 onChange={(e) => setDueDate(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Delete') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (dueDate) {
+                      setDueDate('');
+                    }
+                  }
+                }}
                 className="mt-1.5 h-10 w-full rounded-md border border-slate-300 px-3 font-mono text-sm text-slate-900 focus:border-blue-600 focus:outline-none"
               />
             </div>

@@ -3,10 +3,16 @@ import type {
   ClassData,
   GradebookStoreState,
 } from '../types/gradebook';
-import { createId, STORE_VERSION } from '../utils/storage';
+import {
+  buildTimestampedBackupFileName,
+  createFullBackupArchive,
+  createId,
+  STORE_VERSION,
+} from '../utils/storage';
 
 export const DRIVE_SYNC_FOLDER_NAME = 'SYNC_TabScore';
 export const DRIVE_IMAGES_SUBFOLDER_NAME = 'tavole_immagini';
+export const DRIVE_BACKUP_SUBFOLDER_NAME = 'BACKUP';
 export const DRIVE_ARCHIVE_FILE_NAME = 'tabscore_sync_archive.json';
 export const DRIVE_ARCHIVE_FORMAT = 'tabscore_cloud_sync_v1';
 
@@ -35,6 +41,7 @@ export interface DriveSyncMetadata {
   syncConfirmedByUser: boolean;
   folderId: string | null;
   imagesFolderId: string | null;
+  backupFolderId: string | null;
   archiveFileId: string | null;
   uploadedImageIndex: Record<string, UploadedImageRef>;
   localVersionSeq: number;
@@ -130,6 +137,7 @@ export function loadDriveSyncMetadata(): DriveSyncMetadata {
         syncConfirmedByUser: false,
         folderId: null,
         imagesFolderId: null,
+        backupFolderId: null,
         archiveFileId: null,
         uploadedImageIndex: {},
         localVersionSeq: 0,
@@ -158,6 +166,8 @@ export function loadDriveSyncMetadata(): DriveSyncMetadata {
       folderId: typeof parsed.folderId === 'string' ? parsed.folderId : null,
       imagesFolderId:
         typeof parsed.imagesFolderId === 'string' ? parsed.imagesFolderId : null,
+      backupFolderId:
+        typeof parsed.backupFolderId === 'string' ? parsed.backupFolderId : null,
       archiveFileId:
         typeof parsed.archiveFileId === 'string' ? parsed.archiveFileId : null,
       uploadedImageIndex:
@@ -193,6 +203,7 @@ export function loadDriveSyncMetadata(): DriveSyncMetadata {
       syncConfirmedByUser: false,
       folderId: null,
       imagesFolderId: null,
+      backupFolderId: null,
       archiveFileId: null,
       uploadedImageIndex: {},
       localVersionSeq: 0,
@@ -222,6 +233,7 @@ export function clearDriveSyncConnectionMetadata(): DriveSyncMetadata {
     syncConfirmedByUser: false,
     folderId: null,
     imagesFolderId: null,
+    backupFolderId: null,
     archiveFileId: null,
     uploadedImageIndex: {},
     lastSyncedRemoteRevision: 0,
@@ -646,6 +658,38 @@ async function ensureImagesSubfolder(
   );
 }
 
+export async function ensureBackupSubfolder(
+  accessToken: string,
+  rootFolderId: string,
+  cachedBackupFolderId: string | null,
+  fetchFn: FetchLike = fetch
+): Promise<string> {
+  if (
+    cachedBackupFolderId &&
+    (await verifyFolderActive(
+      accessToken,
+      cachedBackupFolderId,
+      DRIVE_BACKUP_SUBFOLDER_NAME,
+      fetchFn
+    ))
+  ) {
+    return cachedBackupFolderId;
+  }
+  const existing = await findFolderByName(
+    accessToken,
+    DRIVE_BACKUP_SUBFOLDER_NAME,
+    rootFolderId,
+    fetchFn
+  );
+  if (existing) return existing.id;
+  return createFolder(
+    accessToken,
+    DRIVE_BACKUP_SUBFOLDER_NAME,
+    rootFolderId,
+    fetchFn
+  );
+}
+
 async function findArchiveFileInFolder(
   accessToken: string,
   folderId: string,
@@ -695,6 +739,7 @@ async function multipartUploadFile(
   id: string;
   name: string;
   size?: string;
+  parents?: string[];
   modifiedTime?: string;
   md5Checksum?: string;
 }> {
@@ -724,8 +769,8 @@ async function multipartUploadFile(
   const url = isUpdate
     ? `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(
         options.existingFileId!
-      )}?uploadType=multipart&fields=id,name,size,modifiedTime,md5Checksum`
-    : `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,size,modifiedTime,md5Checksum`;
+      )}?uploadType=multipart&fields=id,name,size,parents,modifiedTime,md5Checksum`
+    : `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,size,parents,modifiedTime,md5Checksum`;
 
   const res = await driveFetch(
     url,
@@ -744,6 +789,7 @@ async function multipartUploadFile(
     id: string;
     name: string;
     size?: string;
+    parents?: string[];
     modifiedTime?: string;
     md5Checksum?: string;
   };
@@ -976,8 +1022,10 @@ export async function syncArchiveToDrive(
       if (!plate.imageDataUrl) continue;
       const plateKey = `${cls.id}::${plate.id}`;
       const imageHash = computeImageHash(plate.imageDataUrl);
+      const isPdfPlate = plate.imageDataUrl.startsWith('data:application/pdf');
       const safeName =
-        plate.imageName?.trim() || `tavola_${cls.id}_${plate.number}.png`;
+        plate.imageName?.trim() ||
+        `tavola_${cls.id}_${plate.number}.${isPdfPlate ? 'pdf' : 'png'}`;
       const prevRef = meta.uploadedImageIndex[plateKey];
 
       if (prevRef && prevRef.imageHash === imageHash && prevRef.driveFileId) {
@@ -1176,9 +1224,12 @@ export async function downloadAndHydrateArchiveFromDrive(
           const headerMime = imgRes.headers
             .get('content-type')
             ?.split(';')[0]
-            ?.trim();
+            ?.trim()
+            ?.toLowerCase();
           const mime =
-            headerMime && headerMime.startsWith('image/')
+            headerMime === 'application/pdf' || /\.pdf$/i.test(ref.imageName)
+              ? 'application/pdf'
+              : headerMime && headerMime.startsWith('image/')
               ? headerMime
               : /\.jpe?g$/i.test(ref.imageName)
               ? 'image/jpeg'
@@ -1201,5 +1252,159 @@ export async function downloadAndHydrateArchiveFromDrive(
   return {
     ...payload,
     classes: hydratedClasses,
+  };
+}
+
+export interface DriveBackupUploadResult {
+  fileId: string;
+  fileName: string;
+  folderId: string;
+  backupFolderId: string;
+  exportedAt: string;
+  sizeBytes: number;
+}
+
+async function findFileByNameInFolder(
+  accessToken: string,
+  folderId: string,
+  fileName: string,
+  fetchFn: FetchLike
+): Promise<boolean> {
+  const escaped = fileName.replace(/'/g, "\\'");
+  const q = `name = '${escaped}' and '${folderId}' in parents and trashed = false`;
+  const params = new URLSearchParams({
+    q,
+    fields: 'files(id,name)',
+    spaces: 'drive',
+    pageSize: '2',
+  });
+  const res = await driveFetch(
+    `https://www.googleapis.com/drive/v3/files?${params.toString()}`,
+    accessToken,
+    {},
+    fetchFn
+  );
+  const json = (await res.json()) as { files?: Array<{ id: string }> };
+  return Boolean(json.files && json.files.length > 0);
+}
+
+/**
+ * Salva una copia di backup completo (.json) in `SYNC_TabScore/BACKUP` senza
+ * toccare né interferire con il file operativo `tabscore_sync_archive.json`.
+ */
+export async function uploadFullBackupToDriveFolder(
+  accessToken: string,
+  state: GradebookStoreState,
+  options: {
+    existingFolderId?: string | null;
+    existingBackupFolderId?: string | null;
+    now?: Date;
+  } = {},
+  fetchFn: FetchLike = fetch
+): Promise<DriveBackupUploadResult> {
+  const now = options.now ?? new Date();
+  const folderId = await ensureSyncRootFolder(
+    accessToken,
+    options.existingFolderId ?? null,
+    fetchFn
+  );
+  const backupFolderId = await ensureBackupSubfolder(
+    accessToken,
+    folderId,
+    options.existingBackupFolderId ?? null,
+    fetchFn
+  );
+
+  const backup = createFullBackupArchive(state, now);
+  const jsonBody = JSON.stringify(backup, null, 2);
+
+  let fileName = buildTimestampedBackupFileName(now);
+  // Evita collisioni anche in caso di doppi salvataggi nello stesso secondo
+  if (await findFileByNameInFolder(accessToken, backupFolderId, fileName, fetchFn)) {
+    const suffix = String(now.getMilliseconds()).padStart(3, '0');
+    fileName = fileName.replace(/\.json$/i, `_${suffix}.json`);
+  }
+
+  const uploaded = await multipartUploadFile(
+    accessToken,
+    {
+      existingFileId: null,
+      metadata: {
+        name: fileName,
+        parents: [backupFolderId],
+        mimeType: 'application/json',
+        appProperties: {
+          tabscoreType: 'full_backup_snapshot',
+          exportedAt: backup.exportedAt,
+        },
+      },
+      contentType: 'application/json',
+      contentBody: jsonBody,
+    },
+    fetchFn
+  );
+
+  let verifiedSize = uploaded.size ? Number(uploaded.size) : 0;
+  let verifiedParents = uploaded.parents;
+
+  if (!uploaded.id || !Number.isFinite(verifiedSize) || verifiedSize <= 0 || !verifiedParents) {
+    if (!uploaded.id) {
+      throw new DriveApiError(
+        'Verifica salvataggio backup in SYNC_TabScore/BACKUP non riuscita: ID file mancante.',
+        0,
+        'corrupt'
+      );
+    }
+    const verifyRes = await driveFetch(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+        uploaded.id
+      )}?fields=id,name,size,parents,trashed`,
+      accessToken,
+      {},
+      fetchFn
+    );
+    const verified = (await verifyRes.json()) as {
+      id?: string;
+      size?: string;
+      parents?: string[];
+      trashed?: boolean;
+    };
+    if (!verified.id || verified.trashed) {
+      throw new DriveApiError(
+        'Verifica salvataggio backup in SYNC_TabScore/BACKUP non riuscita.',
+        0,
+        'corrupt'
+      );
+    }
+    verifiedSize = verified.size ? Number(verified.size) : jsonBody.length;
+    verifiedParents = verified.parents;
+  }
+
+  if (verifiedSize <= 0) {
+    throw new DriveApiError(
+      'Il file di backup salvato su Google Drive risulta vuoto.',
+      0,
+      'corrupt'
+    );
+  }
+  if (
+    Array.isArray(verifiedParents) &&
+    verifiedParents.length > 0 &&
+    !verifiedParents.includes(backupFolderId)
+  ) {
+    throw new DriveApiError(
+      'Il file di backup non risulta nella cartella SYNC_TabScore/BACKUP.',
+      0,
+      'corrupt'
+    );
+  }
+
+  return {
+    fileId: uploaded.id,
+    fileName: uploaded.name || fileName,
+    folderId,
+    backupFolderId,
+    exportedAt: backup.exportedAt,
+    sizeBytes: verifiedSize,
   };
 }

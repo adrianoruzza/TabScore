@@ -16,6 +16,7 @@ import {
   ROUNDING_MODE_LABELS,
   STATUS_META,
 } from '../utils/calculations';
+import { getGradeColorStyle } from '../utils/gradeColors';
 
 interface FolderDrawerProps {
   open: boolean;
@@ -155,7 +156,16 @@ export function FolderDrawer({
                 Media voti
               </div>
               <div className="mt-1 flex items-baseline gap-2">
-                <span className="font-mono text-2xl font-bold tabular-nums text-slate-900">
+                <span
+                  style={getGradeColorStyle(breakdown.initialAverage, {
+                    includeBorder: true,
+                  })}
+                  className={
+                    breakdown.initialAverage !== null
+                      ? 'rounded border px-2 py-0.5 font-mono text-xl font-bold tabular-nums'
+                      : 'font-mono text-2xl font-bold tabular-nums text-slate-900'
+                  }
+                >
                   {breakdown.initialAverage !== null
                     ? formatDecimalIt(breakdown.initialAverage, 2)
                     : '—'}
@@ -183,7 +193,16 @@ export function FolderDrawer({
                 )}
               </div>
               <div className="mt-1 flex items-baseline gap-2">
-                <span className="font-mono text-3xl font-extrabold tabular-nums text-blue-950">
+                <span
+                  style={getGradeColorStyle(breakdown.finalGrade, {
+                    includeBorder: true,
+                  })}
+                  className={
+                    breakdown.finalGrade !== null
+                      ? 'rounded border px-2.5 py-0.5 font-mono text-2xl font-extrabold tabular-nums'
+                      : 'font-mono text-3xl font-extrabold tabular-nums text-blue-950'
+                  }
+                >
                   {breakdown.finalGrade !== null
                     ? formatGradeLabel(breakdown.finalGrade)
                     : '—'}
@@ -288,7 +307,16 @@ export function FolderDrawer({
                   </div>
                 </div>
                 <div className="text-right shrink-0">
-                  <span className="font-mono text-xl font-extrabold tabular-nums text-blue-950">
+                  <span
+                    style={getGradeColorStyle(breakdown.suggestedFinalGrade, {
+                      includeBorder: true,
+                    })}
+                    className={
+                      breakdown.suggestedFinalGrade !== null
+                        ? 'rounded border px-2 py-0.5 font-mono text-lg font-extrabold tabular-nums'
+                        : 'font-mono text-xl font-extrabold tabular-nums text-blue-950'
+                    }
+                  >
                     {breakdown.suggestedFinalGrade !== null
                       ? formatGradeLabel(breakdown.suggestedFinalGrade)
                       : '—'}
@@ -375,7 +403,16 @@ export function FolderDrawer({
                         <span aria-hidden="true">·</span>
                         <span>
                           Voto:{' '}
-                          <strong className="font-mono tabular-nums text-slate-700">
+                          <strong
+                            style={getGradeColorStyle(item.grade, {
+                              includeBorder: true,
+                            })}
+                            className={
+                              item.grade !== null
+                                ? 'rounded border px-1.5 py-0.5 font-mono tabular-nums'
+                                : 'font-mono tabular-nums text-slate-700'
+                            }
+                          >
                             {formatGradeLabel(item.grade)}
                           </strong>
                         </span>

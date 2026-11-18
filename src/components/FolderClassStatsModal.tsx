@@ -20,6 +20,7 @@ import {
   formatPlateInterval,
   type FolderPlateStatsItem,
 } from '../utils/calculations';
+import { getGradeColorStyle } from '../utils/gradeColors';
 
 interface FolderClassStatsModalProps {
   open: boolean;
@@ -241,10 +242,21 @@ export function FolderClassStatsModal({
                 <span>Media voti cartellina</span>
                 <Award className="h-3.5 w-3.5 text-blue-700" />
               </div>
-              <div className="mt-1.5 font-mono text-2xl font-bold tabular-nums text-slate-950">
-                {stats.overallGradeAvg !== null
-                  ? formatDecimalIt(stats.overallGradeAvg, 2)
-                  : '—'}
+              <div className="mt-1.5">
+                {stats.overallGradeAvg !== null ? (
+                  <span
+                    style={getGradeColorStyle(stats.overallGradeAvg, {
+                      includeBorder: true,
+                    })}
+                    className="inline-flex rounded border px-2 py-0.5 font-mono text-2xl font-bold tabular-nums"
+                  >
+                    {formatDecimalIt(stats.overallGradeAvg, 2)}
+                  </span>
+                ) : (
+                  <span className="font-mono text-2xl font-bold text-slate-400">
+                    —
+                  </span>
+                )}
               </div>
               <div className="mt-1 font-mono text-[11px] text-slate-500">
                 {stats.totalGradedCells > 0
@@ -736,9 +748,18 @@ export function FolderClassStatsModal({
                       </span>
                       <span className="font-bold text-slate-900">
                         Media:{' '}
-                        {selectedPlateStat.gradeAverage !== null
-                          ? formatDecimalIt(selectedPlateStat.gradeAverage, 2)
-                          : '—'}
+                        {selectedPlateStat.gradeAverage !== null ? (
+                          <span
+                            style={getGradeColorStyle(
+                              selectedPlateStat.gradeAverage
+                            )}
+                            className="inline-flex rounded px-1.5 py-0.5 font-bold"
+                          >
+                            {formatDecimalIt(selectedPlateStat.gradeAverage, 2)}
+                          </span>
+                        ) : (
+                          '—'
+                        )}
                       </span>
                     </div>
                   </div>
@@ -884,9 +905,14 @@ export function FolderClassStatsModal({
                           </td>
                           <td className="px-3 py-2 text-right font-bold text-slate-900">
                             {row.gradeAverage !== null ? (
-                              <span>
-                                {formatDecimalIt(row.gradeAverage, 2)}{' '}
-                                <span className="text-[10px] font-normal text-slate-500">
+                              <span
+                                style={getGradeColorStyle(row.gradeAverage)}
+                                className="inline-flex items-baseline gap-1 rounded px-1.5 py-0.5 font-bold"
+                              >
+                                <span>
+                                  {formatDecimalIt(row.gradeAverage, 2)}
+                                </span>
+                                <span className="text-[10px] font-normal opacity-80">
                                   ({row.gradedCount})
                                 </span>
                               </span>
