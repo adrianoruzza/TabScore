@@ -42,6 +42,7 @@ import {
   formatGradeLabel,
   formatPlateInterval,
   formatShortMonthDateIt,
+  hasValidDeliveryDate,
   sortPlates,
   STATUS_META,
 } from '../utils/calculations';
@@ -1030,20 +1031,24 @@ export function GradeTable({
                       (nextCol.kind === 'plate' &&
                         nextCol.groupIdx !== col.groupIdx));
 
-                  const plateHeaderBg =
+                  const plateHeaderBgColor =
                     col.visiblePlateIndex % 2 === 0
-                      ? 'bg-[#f4f6f9]'
-                      : 'bg-[#e8edf3]';
+                      ? classColor.plateHeaderEvenBg
+                      : classColor.plateHeaderOddBg;
 
                   return (
                     <th
                       key={`h1-${p.id}`}
                       scope="colgroup"
                       colSpan={2}
+                      data-plate-header-shade={
+                        col.visiblePlateIndex % 2 === 0 ? 'even' : 'odd'
+                      }
                       style={{
                         width: plateW,
                         minWidth: plateW,
                         maxWidth: plateW,
+                        backgroundColor: plateHeaderBgColor,
                       }}
                       className={`group/ph sticky top-0 ${
                         isEditingTitle ? 'z-30' : 'z-20'
@@ -1051,7 +1056,7 @@ export function GradeTable({
                         endsGroup
                           ? 'border-r-2 border-r-slate-500'
                           : 'border-r-2 border-r-slate-400'
-                      } ${plateHeaderBg}`}
+                      }`}
                     >
                       <div className={`relative flex h-full ${row1InnerMinHClass} flex-col justify-between`}>
                         {/* Hover/Focus Reorder Controls (top-right so upper title & bottom info bar stay clear) */}
@@ -1132,7 +1137,10 @@ export function GradeTable({
 
                         {/* Bottom Info Row: TXX + sheet preview icon + edit pencil */}
                         <div className="flex shrink-0 items-center justify-between gap-0.5 pt-0.5">
-                          <span className="font-mono text-[14px] font-extrabold leading-none tracking-tight text-blue-950">
+                          <span
+                            style={{ color: classColor.text }}
+                            className="font-mono text-[14px] font-extrabold leading-none tracking-tight"
+                          >
                             T{p.number}
                           </span>
                           <div className="flex items-center gap-0.5">
@@ -1328,6 +1336,10 @@ export function GradeTable({
                     (nextCol.kind === 'folder' ||
                       (nextCol.kind === 'plate' &&
                         nextCol.groupIdx !== col.groupIdx));
+                  const plateHeaderBgColor =
+                    col.visiblePlateIndex % 2 === 0
+                      ? classColor.plateHeaderEvenBg
+                      : classColor.plateHeaderOddBg;
                   return (
                     <FragmentSubHeaders
                       key={`h2-${p.id}`}
@@ -1335,6 +1347,8 @@ export function GradeTable({
                       gradeColW={dims.gradeColW}
                       topPx={row1Height}
                       endsGroup={Boolean(endsGroup)}
+                      headerBgColor={plateHeaderBgColor}
+                      accentTextColor={classColor.text}
                     />
                   );
                 }
@@ -1853,18 +1867,28 @@ const FragmentSubHeaders = memo(function FragmentSubHeaders({
   gradeColW,
   topPx,
   endsGroup,
+  headerBgColor,
+  accentTextColor,
 }: {
   stColW: number;
   gradeColW: number;
   topPx: number;
   endsGroup: boolean;
+  headerBgColor: string;
+  accentTextColor: string;
 }) {
   return (
     <>
       <th
         scope="col"
-        style={{ width: stColW, minWidth: stColW, maxWidth: stColW, top: topPx }}
-        className="sticky z-20 h-[26px] border-r border-b border-slate-300 bg-slate-50 p-0 text-center text-[9px] font-semibold tracking-tight text-slate-600"
+        style={{
+          width: stColW,
+          minWidth: stColW,
+          maxWidth: stColW,
+          top: topPx,
+          backgroundColor: headerBgColor,
+        }}
+        className="sticky z-20 h-[26px] border-r border-b border-slate-300 p-0 text-center text-[9px] font-semibold tracking-tight text-slate-700"
       >
         ST
       </th>
@@ -1875,8 +1899,10 @@ const FragmentSubHeaders = memo(function FragmentSubHeaders({
           minWidth: gradeColW,
           maxWidth: gradeColW,
           top: topPx,
+          backgroundColor: headerBgColor,
+          color: accentTextColor,
         }}
-        className={`sticky z-20 h-[26px] border-b border-slate-300 bg-sky-50/80 p-0 text-center text-[9px] font-semibold tracking-tight text-sky-900 ${
+        className={`sticky z-20 h-[26px] border-b border-slate-300 p-0 text-center text-[9px] font-semibold tracking-tight ${
           endsGroup
             ? 'border-r-2 border-r-slate-500'
             : 'border-r-2 border-r-slate-400'
@@ -2177,6 +2203,7 @@ const FragmentFolderCells = memo(function FragmentFolderCells({
   onClickFinalGrade: (studentId: string, folderId: string, rect: DOMRect) => void;
   onOpenDetail: (studentId: string, folder: FolderDelivery) => void;
 }) {
+  const hasDeliveredDate = hasValidDeliveryDate(actualDeliveryDate);
   const dateColorClass =
     status === 'consegnata'
       ? 'text-emerald-800'
@@ -2184,6 +2211,8 @@ const FragmentFolderCells = memo(function FragmentFolderCells({
       ? 'text-amber-800'
       : status === 'non_consegnata'
       ? 'text-rose-700'
+      : hasDeliveredDate
+      ? 'text-emerald-900'
       : 'text-slate-500';
   const rowHighlightShadow = isRowHighlighted
     ? 'shadow-[inset_0_2px_0_0_#2563eb,inset_0_-2px_0_0_#2563eb]'
@@ -2193,6 +2222,14 @@ const FragmentFolderCells = memo(function FragmentFolderCells({
     : isRowHighlighted
     ? 'bg-blue-50/55'
     : 'bg-white';
+  const deliveredGreenCellBg = isRowDimmed
+    ? 'bg-emerald-50/55'
+    : isRowHighlighted
+    ? 'bg-emerald-100/80'
+    : 'bg-emerald-50/85';
+  const folderFieldsCellBg = hasDeliveredDate
+    ? deliveredGreenCellBg
+    : normalCellBg;
 
   return (
     <>
@@ -2203,7 +2240,8 @@ const FragmentFolderCells = memo(function FragmentFolderCells({
           minWidth: dims.dateColW,
           maxWidth: dims.dateColW,
         }}
-        className={`h-[34px] border-r border-b border-l-2 border-slate-200 border-l-blue-300 border-r-blue-100 p-0 align-middle transition-colors duration-150 ${normalCellBg} ${rowHighlightShadow}`}
+        data-folder-delivered-date={hasDeliveredDate ? 'true' : 'false'}
+        className={`h-[34px] border-r border-b border-l-2 border-slate-200 border-l-blue-300 border-r-blue-100 p-0 align-middle transition-colors duration-150 ${folderFieldsCellBg} ${rowHighlightShadow}`}
       >
         <button
           type="button"
@@ -2215,7 +2253,9 @@ const FragmentFolderCells = memo(function FragmentFolderCells({
             )
           }
           title={`${studentName} · ${folderTitle}: clicca per modificare data effettiva, ritardo (0–10) e stato consegna`}
-          className={`flex h-full w-full items-center justify-center p-0 font-mono text-[10.5px] tabular-nums hover:bg-blue-50/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-600 ${dateColorClass} ${
+          className={`flex h-full w-full items-center justify-center p-0 font-mono text-[10.5px] tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-600 ${
+            hasDeliveredDate ? 'hover:bg-emerald-100/60' : 'hover:bg-blue-50/60'
+          } ${dateColorClass} ${
             isDateSelected ? 'bg-blue-50 ring-2 ring-inset ring-blue-700' : ''
           }`}
         >
@@ -2234,7 +2274,10 @@ const FragmentFolderCells = memo(function FragmentFolderCells({
           minWidth: dims.delayColW,
           maxWidth: dims.delayColW,
         }}
-        className={`h-[34px] border-r border-b border-slate-200 border-r-blue-100 p-0 align-middle transition-colors duration-150 hover:bg-blue-50/60 focus-within:ring-2 focus-within:ring-inset focus-within:ring-blue-600 ${normalCellBg} ${rowHighlightShadow}`}
+        data-folder-delivered-date={hasDeliveredDate ? 'true' : 'false'}
+        className={`h-[34px] border-r border-b border-slate-200 border-r-blue-100 p-0 align-middle transition-colors duration-150 focus-within:ring-2 focus-within:ring-inset focus-within:ring-blue-600 ${
+          hasDeliveredDate ? 'hover:bg-emerald-100/60' : 'hover:bg-blue-50/60'
+        } ${folderFieldsCellBg} ${rowHighlightShadow}`}
       >
         <DelayDaysCellSelect
           value={manualDelayDays}
@@ -2252,7 +2295,8 @@ const FragmentFolderCells = memo(function FragmentFolderCells({
           minWidth: dims.avgColW,
           maxWidth: dims.avgColW,
         }}
-        className={`h-[34px] border-r border-b border-slate-200 border-r-blue-100 p-0 align-middle transition-colors duration-150 ${normalCellBg} ${rowHighlightShadow}`}
+        data-folder-delivered-date={hasDeliveredDate ? 'true' : 'false'}
+        className={`h-[34px] border-r border-b border-slate-200 border-r-blue-100 p-0 align-middle transition-colors duration-150 ${folderFieldsCellBg} ${rowHighlightShadow}`}
       >
         <button
           type="button"
@@ -2270,7 +2314,9 @@ const FragmentFolderCells = memo(function FragmentFolderCells({
                     : '—'
                 } · Nessuna penalità (clicca per dettaglio)`
           }
-          className="flex h-full w-full flex-col items-center justify-center p-0 font-mono leading-tight tabular-nums hover:bg-blue-50/60"
+          className={`flex h-full w-full flex-col items-center justify-center p-0 font-mono leading-tight tabular-nums ${
+            hasDeliveredDate ? 'hover:bg-emerald-100/60' : 'hover:bg-blue-50/60'
+          }`}
         >
           <span className="text-[11px] font-semibold text-slate-700">
             {initialAverage !== null ? formatDecimalIt(initialAverage, 2) : '—'}
@@ -2283,12 +2329,14 @@ const FragmentFolderCells = memo(function FragmentFolderCells({
         </button>
       </td>
 
-      {/* 4. Voto finale (dopo le penalità, aggiornato automaticamente) */}
+      {/* 4. Voto finale (sfondo verde tenue se consegnata con data, giallo se non consegnata, altrimenti azzurrino uniforme senza scala cromatica) */}
       {(() => {
         const isFolderNotDelivered =
-          status === 'da_consegnare' || status === 'non_consegnata';
-        const finalGradeStyle = getGradeColorStyle(finalGrade);
-        const tdClass = isFolderNotDelivered
+          !hasDeliveredDate &&
+          (status === 'da_consegnare' || status === 'non_consegnata');
+        const tdClass = hasDeliveredDate
+          ? deliveredGreenCellBg
+          : isFolderNotDelivered
           ? isRowDimmed
             ? 'bg-yellow-100/60'
             : isRowHighlighted
@@ -2308,6 +2356,7 @@ const FragmentFolderCells = memo(function FragmentFolderCells({
               maxWidth: dims.finalColW,
             }}
             data-folder-not-delivered={isFolderNotDelivered ? 'true' : 'false'}
+            data-folder-delivered-date={hasDeliveredDate ? 'true' : 'false'}
             className={`h-[34px] border-r-2 border-b border-slate-200 border-r-blue-300 p-0 align-middle transition-colors duration-150 ${tdClass} ${rowHighlightShadow}`}
           >
             <button
@@ -2319,11 +2368,6 @@ const FragmentFolderCells = memo(function FragmentFolderCells({
                   e.currentTarget.getBoundingClientRect()
                 )
               }
-              style={
-                !isFolderNotDelivered && finalGradeStyle
-                  ? finalGradeStyle
-                  : undefined
-              }
               title={
                 isManualOverride
                   ? `${studentName} · ${folderTitle}: Voto finale (modifica manuale) — clicca per modificare o ripristinare calcolo automatico`
@@ -2332,23 +2376,14 @@ const FragmentFolderCells = memo(function FragmentFolderCells({
                   : `${studentName} · ${folderTitle}: Voto finale calcolato automaticamente dopo le penalità — clicca per modificare`
               }
               className={`relative flex h-full w-full items-center justify-center gap-[1px] px-0.5 py-0 font-mono text-[17px] font-extrabold leading-none tabular-nums transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-700 ${
-                isFolderNotDelivered
+                hasDeliveredDate
+                  ? 'text-emerald-950 hover:bg-emerald-100/80'
+                  : isFolderNotDelivered
                   ? 'text-slate-900 hover:bg-yellow-200/70'
-                  : finalGradeStyle
-                  ? `hover:brightness-95 ${isRowDimmed ? 'opacity-75' : ''}`
                   : 'text-blue-950 hover:bg-blue-200/70'
               } ${isFolderGradeSelected ? 'ring-2 ring-inset ring-blue-700' : ''}`}
             >
-              {isFolderNotDelivered && finalGradeStyle ? (
-                <span
-                  style={finalGradeStyle}
-                  className="inline-flex items-center justify-center rounded-[3px] px-1.5 py-0.5 font-mono text-[15px] font-extrabold leading-none shadow-2xs"
-                >
-                  {formatGradeLabel(finalGrade)}
-                </span>
-              ) : (
-                <span>{formatGradeLabel(finalGrade)}</span>
-              )}
+              <span>{formatGradeLabel(finalGrade)}</span>
               {isConfirmed && (
                 <Lock
                   className="h-2.5 w-2.5 shrink-0 opacity-85"

@@ -5,6 +5,8 @@ export interface ClassColorOption {
   softBg: string;
   border: string;
   text: string;
+  plateHeaderEvenBg: string;
+  plateHeaderOddBg: string;
 }
 
 export const CLASS_COLOR_PALETTE: ClassColorOption[] = [
@@ -15,6 +17,8 @@ export const CLASS_COLOR_PALETTE: ClassColorOption[] = [
     softBg: '#eff6ff',
     border: '#bfdbfe',
     text: '#1e3a8a',
+    plateHeaderEvenBg: '#f2f7ff',
+    plateHeaderOddBg: '#e1edfe',
   },
   {
     id: 'emerald',
@@ -23,6 +27,8 @@ export const CLASS_COLOR_PALETTE: ClassColorOption[] = [
     softBg: '#ecfdf5',
     border: '#a7f3d0',
     text: '#064e3b',
+    plateHeaderEvenBg: '#f1fbf6',
+    plateHeaderOddBg: '#dcf4e8',
   },
   {
     id: 'amber',
@@ -31,6 +37,8 @@ export const CLASS_COLOR_PALETTE: ClassColorOption[] = [
     softBg: '#fffbeb',
     border: '#fde68a',
     text: '#78350f',
+    plateHeaderEvenBg: '#fef9ec',
+    plateHeaderOddBg: '#fbecc8',
   },
   {
     id: 'indigo',
@@ -39,6 +47,8 @@ export const CLASS_COLOR_PALETTE: ClassColorOption[] = [
     softBg: '#eef2ff',
     border: '#c7d2fe',
     text: '#312e81',
+    plateHeaderEvenBg: '#f3f5ff',
+    plateHeaderOddBg: '#e2e6fe',
   },
   {
     id: 'rose',
@@ -47,6 +57,8 @@ export const CLASS_COLOR_PALETTE: ClassColorOption[] = [
     softBg: '#fff1f2',
     border: '#fecdd3',
     text: '#881337',
+    plateHeaderEvenBg: '#fff3f5',
+    plateHeaderOddBg: '#fce1e6',
   },
   {
     id: 'teal',
@@ -55,6 +67,8 @@ export const CLASS_COLOR_PALETTE: ClassColorOption[] = [
     softBg: '#f0fdfa',
     border: '#99f6e4',
     text: '#134e4a',
+    plateHeaderEvenBg: '#f0fbfa',
+    plateHeaderOddBg: '#d8f3ef',
   },
   {
     id: 'purple',
@@ -63,6 +77,8 @@ export const CLASS_COLOR_PALETTE: ClassColorOption[] = [
     softBg: '#faf5ff',
     border: '#e9d5ff',
     text: '#581c87',
+    plateHeaderEvenBg: '#faf4ff',
+    plateHeaderOddBg: '#efe2fe',
   },
   {
     id: 'slate',
@@ -71,6 +87,8 @@ export const CLASS_COLOR_PALETTE: ClassColorOption[] = [
     softBg: '#f1f5f9',
     border: '#cbd5e1',
     text: '#0f172a',
+    plateHeaderEvenBg: '#f4f6f9',
+    plateHeaderOddBg: '#e5eaf0',
   },
 ];
 

@@ -256,8 +256,13 @@ export function createInitialSeedState(): GradebookStoreState {
 }
 
 export function normalizeClassData(cls: ClassData, fallbackIndex = 0): ClassData {
+  const normalizedOrder =
+    typeof cls.order === 'number' && Number.isFinite(cls.order)
+      ? cls.order
+      : undefined;
   return {
     ...cls,
+    ...(normalizedOrder !== undefined ? { order: normalizedOrder } : {}),
     color: getClassColorOption(cls.color, fallbackIndex).id,
     settings: {
       penaltyNo: cls.settings?.penaltyNo ?? DEFAULT_CLASS_SETTINGS.penaltyNo,
@@ -277,6 +282,20 @@ export function normalizeClassData(cls: ClassData, fallbackIndex = 0): ClassData
   };
 }
 
+export function sortAndNormalizeClasses(classes: ClassData[]): ClassData[] {
+  return classes
+    .map((cls, idx) => ({
+      cls,
+      sortOrder:
+        typeof cls.order === 'number' && Number.isFinite(cls.order)
+          ? cls.order
+          : idx,
+      idx,
+    }))
+    .sort((a, b) => a.sortOrder - b.sortOrder || a.idx - b.idx)
+    .map((item, idx) => normalizeClassData(item.cls, idx));
+}
+
 export function loadStoreState(): GradebookStoreState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -289,9 +308,7 @@ export function loadStoreState(): GradebookStoreState {
     if (!parsed || !Array.isArray(parsed.classes)) {
       throw new Error('Struttura archivio non valida');
     }
-    const normalizedClasses = parsed.classes.map((cls, idx) =>
-      normalizeClassData(cls, idx)
-    );
+    const normalizedClasses = sortAndNormalizeClasses(parsed.classes);
     return {
       version: parsed.version ?? STORE_VERSION,
       activeClassId:

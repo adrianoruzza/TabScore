@@ -16,7 +16,7 @@ import {
   useState,
   type DragEvent,
 } from 'react';
-import type { ClassData } from '../types/gradebook';
+import type { ClassData, Student } from '../types/gradebook';
 import {
   buildPreviewWithDuplicates,
   extractCandidatesFromExcelSheet,
@@ -32,7 +32,13 @@ import {
 
 interface StudentImportModalProps {
   open: boolean;
-  targetClass: ClassData | null;
+  targetClass?: ClassData | null;
+  targetClassName?: string;
+  targetSchoolYear?: string;
+  existingStudents?: Student[];
+  excelOnly?: boolean;
+  confirmButtonLabel?: string;
+  footerNote?: string;
   onImport: (
     students: Array<{ lastName: string; firstName: string }>,
     fileName: string
@@ -42,7 +48,13 @@ interface StudentImportModalProps {
 
 export function StudentImportModal({
   open,
-  targetClass,
+  targetClass = null,
+  targetClassName,
+  targetSchoolYear,
+  existingStudents,
+  excelOnly = false,
+  confirmButtonLabel,
+  footerNote,
   onImport,
   onClose,
 }: StudentImportModalProps) {
@@ -126,12 +138,26 @@ export function StudentImportModal({
       setLoading(true);
       setError('');
       try {
+        if (excelOnly && !/\.(xlsx|xls)$/i.test(file.name)) {
+          setParsedDoc(null);
+          setCandidates([]);
+          setUnrecognizedLines([]);
+          setError('Formato non valido: seleziona un file Excel (.xlsx o .xls).');
+          return;
+        }
         const res = await parseStudentImportFile(file);
         if (!res.ok) {
           setParsedDoc(null);
           setCandidates([]);
           setUnrecognizedLines([]);
           setError(res.error);
+          return;
+        }
+        if (excelOnly && res.kind !== 'excel') {
+          setParsedDoc(null);
+          setCandidates([]);
+          setUnrecognizedLines([]);
+          setError('Formato non valido: seleziona un file Excel (.xlsx o .xls).');
           return;
         }
 
@@ -162,7 +188,7 @@ export function StudentImportModal({
         }
       }
     },
-    [applyExcelExtraction]
+    [applyExcelExtraction, excelOnly]
   );
 
   const handleDrop = (e: DragEvent<HTMLDivElement>) => {
@@ -172,14 +198,26 @@ export function StudentImportModal({
     if (file) void handleFile(file);
   };
 
+  const resolvedExistingStudents = useMemo(
+    () => targetClass?.students ?? existingStudents ?? [],
+    [targetClass, existingStudents]
+  );
+
   const previewRows: PreviewStudentRow[] = useMemo(() => {
-    if (!targetClass) return [];
+    if (!targetClass && !targetClassName && !excelOnly) return [];
     return buildPreviewWithDuplicates(
       candidates,
-      targetClass.students,
+      resolvedExistingStudents,
       selectionMap
     );
-  }, [candidates, targetClass, selectionMap]);
+  }, [
+    candidates,
+    targetClass,
+    targetClassName,
+    excelOnly,
+    resolvedExistingStudents,
+    selectionMap,
+  ]);
 
   const stats = useMemo(() => {
     let selectedCount = 0;
@@ -198,7 +236,12 @@ export function StudentImportModal({
     };
   }, [previewRows]);
 
-  if (!open || !targetClass) return null;
+  if (!open || (!targetClass && !targetClassName && !excelOnly)) return null;
+
+  const resolvedTargetName =
+    targetClass?.name ?? (targetClassName?.trim() || 'Nuova classe');
+  const resolvedSchoolYear =
+    targetClass?.schoolYear ?? (targetSchoolYear?.trim() || '');
 
   const activeSheet =
     parsedDoc?.kind === 'excel' ? parsedDoc.sheets[sheetIdx] ?? null : null;
@@ -310,18 +353,18 @@ export function StudentImportModal({
         {/* Header */}
         <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-6 py-4">
           <div className="min-w-0">
-            <h2
+              <h2
               id="student-import-title"
               className="font-display text-base font-semibold text-slate-900"
             >
-              Importa studenti
+              {excelOnly ? 'Importa studenti da Excel' : 'Importa studenti'}
             </h2>
             <p className="mt-0.5 text-xs text-slate-600">
               Classe di destinazione:{' '}
               <span className="font-semibold text-slate-900">
-                {targetClass.name}
-              </span>{' '}
-              ({targetClass.schoolYear}) · Elaborazione locale nel browser
+                {resolvedTargetName}
+              </span>
+              {resolvedSchoolYear ? ` (${resolvedSchoolYear})` : ''} · Elaborazione locale nel browser
             </p>
           </div>
           <button
@@ -339,7 +382,7 @@ export function StudentImportModal({
           <input
             ref={fileInputRef}
             type="file"
-            accept=".xlsx,.xls,.docx,.doc,.txt"
+            accept={excelOnly ? '.xlsx,.xls' : '.xlsx,.xls,.docx,.doc,.txt'}
             className="hidden"
             onChange={(e) => {
               const file = e.target.files?.[0];
@@ -366,11 +409,14 @@ export function StudentImportModal({
               <p className="mt-2.5 text-sm font-semibold text-slate-900">
                 {loading
                   ? 'Lettura del file in corso...'
+                  : excelOnly
+                  ? 'Seleziona o trascina un file Excel (.xlsx, .xls)'
                   : 'Seleziona o trascina un file con l’elenco studenti'}
               </p>
               <p className="mt-1 text-xs text-slate-500">
-                Formati supportati: Excel (.xlsx, .xls), Word (.docx, .doc) e
-                Testo (.txt)
+                {excelOnly
+                  ? 'Formati supportati: Excel (.xlsx, .xls) · Importazione di soli Cognome e Nome'
+                  : 'Formati supportati: Excel (.xlsx, .xls), Word (.docx, .doc) e Testo (.txt)'}
               </p>
               <button
                 type="button"
@@ -767,8 +813,8 @@ export function StudentImportModal({
         {/* Footer */}
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-slate-50/70 px-6 py-3.5">
           <p className="text-[11px] text-slate-500">
-            I nuovi studenti vengono aggiunti in ordine alfabetico senza
-            modificare studenti, voti o tag esistenti.
+            {footerNote ??
+              'I nuovi studenti vengono aggiunti in ordine alfabetico senza modificare studenti, voti o tag esistenti.'}
           </p>
           <div className="flex items-center gap-2">
             <button
@@ -784,8 +830,11 @@ export function StudentImportModal({
               onClick={handleConfirmImport}
               className="inline-flex h-9 items-center gap-1.5 rounded-md bg-blue-700 px-4 text-xs font-medium text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              Importa {stats.selectedCount}{' '}
-              {stats.selectedCount === 1 ? 'studente' : 'studenti'}
+              {confirmButtonLabel
+                ? `${confirmButtonLabel} (${stats.selectedCount})`
+                : `Importa ${stats.selectedCount} ${
+                    stats.selectedCount === 1 ? 'studente' : 'studenti'
+                  }`}
             </button>
           </div>
         </div>

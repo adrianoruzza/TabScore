@@ -38,6 +38,7 @@ import {
   loadStoreState,
   normalizeClassData,
   saveStoreState,
+  sortAndNormalizeClasses,
   STORE_VERSION,
 } from '../utils/storage';
 
@@ -282,6 +283,160 @@ export function applyImportPlatesFromClass(
   };
 }
 
+export interface CreateClassInput {
+  name: string;
+  schoolYear: string;
+  color?: string;
+  sourcePlatesClassId?: string;
+  includePlateAttachments?: boolean;
+  initialStudents?: Array<{ lastName: string; firstName: string }>;
+  initialStudentsSourceFile?: string;
+}
+
+export function applyCreateClass(
+  prev: GradebookStoreState,
+  input: CreateClassInput,
+  createdId: string = createId('cls')
+): GradebookStoreState {
+  const now = new Date().toISOString();
+  const chosenColor =
+    input.color ||
+    pickNextDistinctClassColorId(prev.classes.map((c) => c.color));
+  const sourceClass = input.sourcePlatesClassId
+    ? prev.classes.find((c) => c.id === input.sourcePlatesClassId)
+    : undefined;
+  const importedPlates = sourceClass
+    ? clonePlatesForImport(sourceClass.plates, {
+        includeAttachments: input.includePlateAttachments,
+      })
+    : [];
+
+  // Deduplicate & sanitize initial students (only lastName + firstName, alphabetical)
+  const batchKeys = new Set<string>();
+  const cleanInitialEntries: Array<{ lastName: string; firstName: string }> = [];
+  for (const raw of input.initialStudents ?? []) {
+    const lastName = normalizeNameValue(raw.lastName);
+    const firstName = normalizeNameValue(raw.firstName);
+    if (!lastName && !firstName) continue;
+    const key = buildStudentDedupeKey(lastName, firstName);
+    if (batchKeys.has(key)) continue;
+    batchKeys.add(key);
+    cleanInitialEntries.push({ lastName, firstName });
+  }
+  const sortedInitial = sortStudentsAlphabeticallyIt(cleanInitialEntries);
+  const initialStudents: Student[] = sortedInitial.map((entry, idx) => ({
+    id: createId('stu'),
+    lastName: entry.lastName,
+    firstName: entry.firstName,
+    order: idx,
+  }));
+
+  const maxOrder = prev.classes.reduce(
+    (max, c, idx) =>
+      Math.max(
+        max,
+        typeof c.order === 'number' && Number.isFinite(c.order) ? c.order : idx
+      ),
+    -1
+  );
+
+  const newClass: ClassData = {
+    id: createdId,
+    name: input.name.trim(),
+    schoolYear: input.schoolYear.trim() || '2026/2027',
+    order: maxOrder + 1,
+    color: chosenColor,
+    createdAt: now,
+    updatedAt: now,
+    settings: { ...DEFAULT_CLASS_SETTINGS },
+    students: initialStudents,
+    plates: importedPlates,
+    evaluations: {},
+    folders: [],
+    folderRecords: {},
+  };
+
+  const platesNote =
+    sourceClass && importedPlates.length > 0
+      ? ` Con ${importedPlates.length} tavole importate da "${sourceClass.name}".`
+      : '';
+  const studentsNote =
+    initialStudents.length > 0
+      ? ` Con ${initialStudents.length} ${
+          initialStudents.length === 1 ? 'studente importato' : 'studenti importati'
+        }${
+          input.initialStudentsSourceFile?.trim()
+            ? ` da "${input.initialStudentsSourceFile.trim()}"`
+            : ''
+        }.`
+      : '';
+
+  return {
+    ...prev,
+    activeClassId: newClass.id,
+    classes: [...prev.classes, newClass],
+    auditLog: [
+      makeLog(
+        newClass.id,
+        newClass.name,
+        'classe',
+        'Creazione classe',
+        `Creata nuova classe "${newClass.name}" (${newClass.schoolYear}).${studentsNote}${platesNote}`
+      ),
+      ...prev.auditLog,
+    ],
+  };
+}
+
+export function applyReorderClasses(
+  prev: GradebookStoreState,
+  fromIndex: number,
+  toIndex: number
+): GradebookStoreState {
+  if (
+    fromIndex < 0 ||
+    toIndex < 0 ||
+    fromIndex >= prev.classes.length ||
+    toIndex >= prev.classes.length ||
+    fromIndex === toIndex
+  ) {
+    return prev;
+  }
+
+  const nextClasses = [...prev.classes];
+  const [moved] = nextClasses.splice(fromIndex, 1);
+  nextClasses.splice(toIndex, 0, moved);
+  const now = new Date().toISOString();
+
+  const normalized = nextClasses.map((cls, idx) => {
+    const prevOrder = cls.order;
+    const orderChanged = prevOrder !== idx;
+    if (cls.id === moved.id || orderChanged) {
+      return {
+        ...cls,
+        order: idx,
+        updatedAt: now,
+      };
+    }
+    return cls;
+  });
+
+  return {
+    ...prev,
+    classes: normalized,
+    auditLog: [
+      makeLog(
+        moved.id,
+        moved.name,
+        'classe',
+        'Riordino classi',
+        `Spostata classe "${moved.name}" dalla posizione ${fromIndex + 1} alla posizione ${toIndex + 1}.`
+      ),
+      ...prev.auditLog,
+    ],
+  };
+}
+
 export function useGradebookStore() {
   const [storeRecord, setStoreRecord] = useState<{
     state: GradebookStoreState;
@@ -340,62 +495,9 @@ export function useGradebookStore() {
   );
 
   const createClass = useCallback(
-    (input: {
-      name: string;
-      schoolYear: string;
-      color?: string;
-      sourcePlatesClassId?: string;
-      includePlateAttachments?: boolean;
-    }) => {
-      const now = new Date().toISOString();
+    (input: CreateClassInput) => {
       const createdId = createId('cls');
-      commit((prev) => {
-        const chosenColor =
-          input.color ||
-          pickNextDistinctClassColorId(prev.classes.map((c) => c.color));
-        const sourceClass = input.sourcePlatesClassId
-          ? prev.classes.find((c) => c.id === input.sourcePlatesClassId)
-          : undefined;
-        const importedPlates = sourceClass
-          ? clonePlatesForImport(sourceClass.plates, {
-              includeAttachments: input.includePlateAttachments,
-            })
-          : [];
-
-        const newClass: ClassData = {
-          id: createdId,
-          name: input.name.trim(),
-          schoolYear: input.schoolYear.trim() || '2026/2027',
-          color: chosenColor,
-          createdAt: now,
-          updatedAt: now,
-          settings: { ...DEFAULT_CLASS_SETTINGS },
-          students: [],
-          plates: importedPlates,
-          evaluations: {},
-          folders: [],
-          folderRecords: {},
-        };
-        const platesNote =
-          sourceClass && importedPlates.length > 0
-            ? ` Con ${importedPlates.length} tavole importate da "${sourceClass.name}".`
-            : '';
-        return {
-          ...prev,
-          activeClassId: newClass.id,
-          classes: [...prev.classes, newClass],
-          auditLog: [
-            makeLog(
-              newClass.id,
-              newClass.name,
-              'classe',
-              'Creazione classe',
-              `Creata nuova classe "${newClass.name}" (${newClass.schoolYear}).${platesNote}`
-            ),
-            ...prev.auditLog,
-          ],
-        };
-      });
+      commit((prev) => applyCreateClass(prev, input, createdId));
       return createdId;
     },
     [commit]
@@ -440,12 +542,24 @@ export function useGradebookStore() {
     [commit]
   );
 
+  const reorderClasses = useCallback(
+    (fromIndex: number, toIndex: number) => {
+      commit((prev) => applyReorderClasses(prev, fromIndex, toIndex));
+    },
+    [commit]
+  );
+
   const deleteClass = useCallback(
     (classId: string) => {
       commit((prev) => {
         const target = prev.classes.find((c) => c.id === classId);
         if (!target) return prev;
-        const remaining = prev.classes.filter((c) => c.id !== classId);
+        const hasOrders = prev.classes.some(
+          (c) => typeof c.order === 'number' && Number.isFinite(c.order)
+        );
+        const remaining = prev.classes
+          .filter((c) => c.id !== classId)
+          .map((c, idx) => (hasOrders ? { ...c, order: idx } : c));
         const nextActive =
           prev.activeClassId === classId
             ? remaining[0]?.id ?? null
@@ -1831,22 +1945,39 @@ export function useGradebookStore() {
     (archive: SingleClassArchive, mode: 'add_new' | 'replace_existing') => {
       commit((prev) => {
         const incoming = normalizeClassData(archive.classData);
-        const exists = prev.classes.some((c) => c.id === incoming.id);
+        const existingIndex = prev.classes.findIndex((c) => c.id === incoming.id);
+        const exists = existingIndex !== -1;
         let nextClass: ClassData;
         let nextClasses: ClassData[];
 
         if (mode === 'replace_existing' && exists) {
-          nextClass = { ...incoming, updatedAt: new Date().toISOString() };
+          const prevOrder = prev.classes[existingIndex].order;
+          nextClass = {
+            ...incoming,
+            ...(typeof prevOrder === 'number' ? { order: prevOrder } : {}),
+            updatedAt: new Date().toISOString(),
+          };
           nextClasses = prev.classes.map((c) =>
             c.id === incoming.id ? nextClass : c
           );
         } else {
           const newId = exists ? createId('cls') : incoming.id;
           const suffix = exists ? ' (Importata)' : '';
+          const maxOrder = prev.classes.reduce(
+            (max, c, idx) =>
+              Math.max(
+                max,
+                typeof c.order === 'number' && Number.isFinite(c.order)
+                  ? c.order
+                  : idx
+              ),
+            -1
+          );
           nextClass = {
             ...incoming,
             id: newId,
             name: `${incoming.name}${suffix}`,
+            order: maxOrder + 1,
             updatedAt: new Date().toISOString(),
           };
           nextClasses = [...prev.classes, nextClass];
@@ -1883,9 +2014,7 @@ export function useGradebookStore() {
   const importFullBackup = useCallback(
     (backup: FullBackupArchive) => {
       commit((prev) => {
-        const normalizedClasses = backup.classes.map((cls, idx) =>
-          normalizeClassData(cls, idx)
-        );
+        const normalizedClasses = sortAndNormalizeClasses(backup.classes);
         return {
           version: backup.version ?? prev.version,
           activeClassId: normalizedClasses[0]?.id ?? null,
@@ -1916,9 +2045,7 @@ export function useGradebookStore() {
       },
       sourceLabel = 'Google Drive'
     ): GradebookStoreState => {
-      const normalizedClasses = payload.classes.map((cls, idx) =>
-        normalizeClassData(cls, idx)
-      );
+      const normalizedClasses = sortAndNormalizeClasses(payload.classes);
       const restoredActiveId =
         payload.activeClassId &&
         normalizedClasses.some((c) => c.id === payload.activeClassId)
@@ -1984,6 +2111,7 @@ export function useGradebookStore() {
     setActiveClass,
     createClass,
     updateClass,
+    reorderClasses,
     deleteClass,
     addStudent,
     importStudents,

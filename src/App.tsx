@@ -680,6 +680,7 @@ export default function App() {
         onSelectClass={store.setActiveClass}
         onCreateClass={store.createClass}
         onUpdateClass={store.updateClass}
+        onReorderClasses={store.reorderClasses}
         onDeleteClass={(cls) => setConfirmTarget({ kind: 'class', cls })}
         onImportStudents={store.importStudents}
         onImportPlatesFromClass={store.importPlatesFromClass}

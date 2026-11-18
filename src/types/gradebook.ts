@@ -145,6 +145,7 @@ export interface ClassData {
   id: string;
   name: string;
   schoolYear: string;
+  order?: number;
   color?: string;
   subject?: string;
   createdAt: string;

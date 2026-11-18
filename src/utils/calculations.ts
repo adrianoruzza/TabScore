@@ -68,6 +68,23 @@ export function parseUtcDateMs(dateStr: string): number | null {
   return Date.UTC(y, m - 1, d);
 }
 
+export function hasValidDeliveryDate(dateStr: string | null | undefined): boolean {
+  if (!dateStr) return false;
+  const trimmed = dateStr.trim();
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+  if (!match) return false;
+  const y = Number(match[1]);
+  const m = Number(match[2]);
+  const d = Number(match[3]);
+  if (m < 1 || m > 12 || d < 1 || d > 31) return false;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return (
+    dt.getUTCFullYear() === y &&
+    dt.getUTCMonth() === m - 1 &&
+    dt.getUTCDate() === d
+  );
+}
+
 
 
 const IT_MONTHS_SHORT = [

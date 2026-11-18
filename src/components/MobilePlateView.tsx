@@ -29,6 +29,7 @@ import {
   formatDecimalIt,
   formatGradeLabel,
   formatShortMonthDateIt,
+  hasValidDeliveryDate,
   sortPlates,
   STATUS_META,
 } from '../utils/calculations';
@@ -438,11 +439,10 @@ export function MobilePlateView({
             const hasSupportNeeds = Boolean(
               stu.supportNeeds && stu.supportNeeds.length > 0
             );
+            const hasDeliveredDate = hasValidDeliveryDate(rec.actualDeliveryDate);
             const isFolderNotDelivered =
-              rec.status === 'da_consegnare' || rec.status === 'non_consegnata';
-            const finalStyle = getGradeColorStyle(calc.finalGrade, {
-              includeBorder: true,
-            });
+              !hasDeliveredDate &&
+              (rec.status === 'da_consegnare' || rec.status === 'non_consegnata');
             return (
               <button
                 key={stu.id}
@@ -492,18 +492,27 @@ export function MobilePlateView({
                 </div>
                 <div
                   className={`flex flex-col items-end shrink-0 rounded px-2 py-1 ${
-                    isFolderNotDelivered ? 'border border-yellow-300 bg-yellow-100/90' : ''
+                    hasDeliveredDate
+                      ? 'border border-emerald-200 bg-emerald-50/90'
+                      : isFolderNotDelivered
+                      ? 'border border-yellow-300 bg-yellow-100/90'
+                      : 'border border-blue-200 bg-blue-100/75'
                   }`}
                 >
-                  <span className="text-[9px] font-semibold uppercase tracking-wide text-blue-700">
+                  <span
+                    className={`text-[9px] font-semibold uppercase tracking-wide ${
+                      hasDeliveredDate ? 'text-emerald-800' : 'text-blue-700'
+                    }`}
+                  >
                     Voto finale
                   </span>
                   <div className="mt-0.5 flex items-center gap-1 font-mono text-lg font-extrabold leading-none">
                     <span
-                      style={finalStyle}
                       className={
-                        finalStyle
-                          ? 'rounded border px-1.5 py-0.5 text-base font-extrabold leading-none'
+                        hasDeliveredDate
+                          ? 'text-emerald-950'
+                          : isFolderNotDelivered
+                          ? 'text-slate-900'
                           : 'text-blue-950'
                       }
                     >

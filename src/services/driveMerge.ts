@@ -487,6 +487,7 @@ function mergeClass(
     remoteCls.schoolYear
   );
   const colorRes = mergeScalar3Way(hasBase, baseCls?.color, localCls.color, remoteCls.color);
+  const orderRes = mergeScalar3Way(hasBase, baseCls?.order, localCls.order, remoteCls.order);
   if (!nameRes.ok || !yearRes.ok || !colorRes.ok) {
     conflicts.push(
       `Dati generali della classe "${label}" modificati in modo diverso su entrambi i dispositivi`
@@ -722,10 +723,19 @@ function mergeClass(
     remoteCls.archivedStudentHistories
   );
 
+  const mergedOrder = orderRes.ok
+    ? orderRes.value
+    : localUpMs >= remoteUpMs
+    ? localCls.order
+    : remoteCls.order;
+
   const out: ClassData = {
     id: localCls.id,
     name: nameRes.ok ? nameRes.value : label,
     schoolYear: yearRes.ok ? yearRes.value : localCls.schoolYear,
+    ...(typeof mergedOrder === 'number' && Number.isFinite(mergedOrder)
+      ? { order: mergedOrder }
+      : {}),
     color: colorRes.ok ? colorRes.value : localCls.color,
     createdAt: remoteCls.createdAt || localCls.createdAt,
     updatedAt: nextUpdatedAt,
@@ -812,6 +822,43 @@ export function reconcileArchives(params: {
       outcome: 'conflict',
       conflicts,
     };
+  }
+
+  const localOrderMap = new Map(
+    local.classes.map((c, idx) => [
+      c.id,
+      typeof c.order === 'number' && Number.isFinite(c.order) ? c.order : idx,
+    ])
+  );
+  const remoteOrderMap = new Map(
+    remote.classes.map((c, idx) => [
+      c.id,
+      typeof c.order === 'number' && Number.isFinite(c.order) ? c.order : idx,
+    ])
+  );
+  const hasExplicitOrders = mergedClasses.some(
+    (c) => typeof c.order === 'number' && Number.isFinite(c.order)
+  );
+  if (hasExplicitOrders) {
+    mergedClasses.sort((a, b) => {
+      const aOrd =
+        typeof a.order === 'number' && Number.isFinite(a.order)
+          ? a.order
+          : localOrderMap.get(a.id) ??
+            remoteOrderMap.get(a.id) ??
+            Number.MAX_SAFE_INTEGER;
+      const bOrd =
+        typeof b.order === 'number' && Number.isFinite(b.order)
+          ? b.order
+          : localOrderMap.get(b.id) ??
+            remoteOrderMap.get(b.id) ??
+            Number.MAX_SAFE_INTEGER;
+      if (aOrd !== bOrd) return aOrd - bOrd;
+      return a.id.localeCompare(b.id);
+    });
+    for (let i = 0; i < mergedClasses.length; i++) {
+      mergedClasses[i] = { ...mergedClasses[i], order: i };
+    }
   }
 
   const nextActiveClassId =

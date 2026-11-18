@@ -23,13 +23,13 @@ export const GRADE_COLOR_RANGE = {
 } as const;
 
 export const GRADE_COLOR_STOPS: readonly GradeColorStop[] = [
-  { grade: 2, bg: '#9C6615' },   // Ocra intenso
-  { grade: 4, bg: '#946B1E' },   // Ocra dorato caldo
-  { grade: 5.5, bg: '#7E7638' }, // Ocra-oliva di transizione
-  { grade: 6, bg: '#557175' },   // Punto di soglia neutro-azzurrato
-  { grade: 7.5, bg: '#37628D' }, // Azzurro acciaio medio
-  { grade: 9, bg: '#22467D' },   // Blu profondo
-  { grade: 10, bg: '#142B5E' },  // Blu scuro
+  { grade: 2, bg: '#D9B679' },   // Ocra pastello morbido
+  { grade: 4, bg: '#E8D3A8' },   // Ocra pastello chiaro
+  { grade: 5.5, bg: '#E1DCB9' }, // Ocra-oliva pastello di transizione
+  { grade: 6, bg: '#D4E1E2' },   // Punto di soglia neutro-azzurrato tenue
+  { grade: 7.5, bg: '#B9CFE5' }, // Azzurro pastello medio
+  { grade: 9, bg: '#9BB7DA' },   // Blu pastello intenso
+  { grade: 10, bg: '#7F9EC9' },  // Blu scuro tenue
 ];
 
 interface RgbColor {
