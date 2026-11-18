@@ -12,6 +12,7 @@ export const DRIVE_ARCHIVE_FORMAT = 'tabscore_cloud_sync_v1';
 
 const DRIVE_META_STORAGE_KEY = 'tabscore_drive_sync_meta_v1';
 const SAFETY_BACKUP_STORAGE_KEY = 'tabscore_safety_backup_v1';
+const SYNC_BASE_STORAGE_KEY = 'tabscore_drive_sync_base_v1';
 
 export type DriveSyncStatus =
   | 'idle'
@@ -36,6 +37,8 @@ export interface DriveSyncMetadata {
   imagesFolderId: string | null;
   archiveFileId: string | null;
   uploadedImageIndex: Record<string, UploadedImageRef>;
+  localVersionSeq: number;
+  lastLocalModifiedAt: string | null;
   lastSyncedContentHash: string | null;
   lastSyncedRemoteRevision: number;
   lastSyncedAt: string | null;
@@ -63,10 +66,13 @@ export interface TabScoreSyncSummary {
 export interface TabScoreSyncPayload {
   format: typeof DRIVE_ARCHIVE_FORMAT;
   archiveType: 'full_backup';
+  archiveId?: string;
   version: number;
   exportedAt: string;
   revision: number;
+  baseRevision?: number;
   updatedAt: string;
+  lastEffectiveModifiedAt?: string;
   deviceId: string;
   contentHash: string;
   activeClassId: string | null;
@@ -126,6 +132,8 @@ export function loadDriveSyncMetadata(): DriveSyncMetadata {
         imagesFolderId: null,
         archiveFileId: null,
         uploadedImageIndex: {},
+        localVersionSeq: 0,
+        lastLocalModifiedAt: null,
         lastSyncedContentHash: null,
         lastSyncedRemoteRevision: 0,
         lastSyncedAt: null,
@@ -156,6 +164,14 @@ export function loadDriveSyncMetadata(): DriveSyncMetadata {
         parsed.uploadedImageIndex && typeof parsed.uploadedImageIndex === 'object'
           ? parsed.uploadedImageIndex
           : {},
+      localVersionSeq:
+        typeof parsed.localVersionSeq === 'number'
+          ? parsed.localVersionSeq
+          : 0,
+      lastLocalModifiedAt:
+        typeof parsed.lastLocalModifiedAt === 'string'
+          ? parsed.lastLocalModifiedAt
+          : null,
       lastSyncedContentHash:
         typeof parsed.lastSyncedContentHash === 'string'
           ? parsed.lastSyncedContentHash
@@ -179,6 +195,8 @@ export function loadDriveSyncMetadata(): DriveSyncMetadata {
       imagesFolderId: null,
       archiveFileId: null,
       uploadedImageIndex: {},
+      localVersionSeq: 0,
+      lastLocalModifiedAt: null,
       lastSyncedContentHash: null,
       lastSyncedRemoteRevision: 0,
       lastSyncedAt: null,
@@ -211,7 +229,48 @@ export function clearDriveSyncConnectionMetadata(): DriveSyncMetadata {
     lastError: null,
   };
   saveDriveSyncMetadata(next);
+  clearSyncedBaseSnapshot();
   return next;
+}
+
+export function saveSyncedBaseSnapshot(state: GradebookStoreState): boolean {
+  try {
+    localStorage.setItem(SYNC_BASE_STORAGE_KEY, JSON.stringify(state));
+    return true;
+  } catch {
+    try {
+      localStorage.setItem(
+        SYNC_BASE_STORAGE_KEY,
+        JSON.stringify({
+          ...state,
+          auditLog: state.auditLog.slice(0, 30),
+        })
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+export function loadSyncedBaseSnapshot(): GradebookStoreState | null {
+  try {
+    const raw = localStorage.getItem(SYNC_BASE_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as GradebookStoreState;
+    if (!parsed || !Array.isArray(parsed.classes)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function clearSyncedBaseSnapshot(): void {
+  try {
+    localStorage.removeItem(SYNC_BASE_STORAGE_KEY);
+  } catch {
+    // Ignore storage errors
+  }
 }
 
 export function saveLocalSafetyBackup(
@@ -721,16 +780,23 @@ export async function validateSyncPayload(
   const normalizedPayload: TabScoreSyncPayload = {
     format: obj.format ?? DRIVE_ARCHIVE_FORMAT,
     archiveType: 'full_backup',
+    ...(typeof obj.archiveId === 'string' ? { archiveId: obj.archiveId } : {}),
     version: typeof obj.version === 'number' ? obj.version : STORE_VERSION,
     exportedAt:
       typeof obj.exportedAt === 'string'
         ? obj.exportedAt
         : new Date().toISOString(),
     revision: typeof obj.revision === 'number' ? obj.revision : 1,
+    ...(typeof obj.baseRevision === 'number'
+      ? { baseRevision: obj.baseRevision }
+      : {}),
     updatedAt:
       typeof obj.updatedAt === 'string'
         ? obj.updatedAt
         : new Date().toISOString(),
+    ...(typeof obj.lastEffectiveModifiedAt === 'string'
+      ? { lastEffectiveModifiedAt: obj.lastEffectiveModifiedAt }
+      : {}),
     deviceId: typeof obj.deviceId === 'string' ? obj.deviceId : 'unknown',
     contentHash: typeof obj.contentHash === 'string' ? obj.contentHash : '',
     activeClassId:
@@ -988,13 +1054,18 @@ export async function syncArchiveToDrive(
 
   const contentHash = await computeStoreContentHash(state);
   const now = new Date().toISOString();
+  const effectiveModifiedAt = meta.lastLocalModifiedAt ?? now;
+  const archiveId = `arch_${options.targetRevision}_${meta.deviceId}_${contentHash.slice(0, 8)}`;
   const payload: TabScoreSyncPayload = {
     format: DRIVE_ARCHIVE_FORMAT,
     archiveType: 'full_backup',
+    archiveId,
     version: state.version ?? STORE_VERSION,
     exportedAt: now,
     revision: options.targetRevision,
+    baseRevision: meta.lastSyncedRemoteRevision,
     updatedAt: now,
+    lastEffectiveModifiedAt: effectiveModifiedAt,
     deviceId: meta.deviceId,
     contentHash,
     activeClassId: state.activeClassId,

@@ -130,6 +130,24 @@ export function DriveSyncDialogs({
                 </div>
               </div>
 
+              {dialog.conflicts && dialog.conflicts.length > 0 && (
+                <div className="rounded-md border border-rose-200 bg-rose-50/70 p-3 text-xs text-rose-900">
+                  <div className="font-semibold text-rose-950">
+                    Elementi modificati in modo incompatibile su entrambi i dispositivi:
+                  </div>
+                  <ul className="mt-1.5 max-h-28 list-disc space-y-1 overflow-y-auto pl-4 text-[11px]">
+                    {dialog.conflicts.slice(0, 6).map((item, idx) => (
+                      <li key={idx}>{item}</li>
+                    ))}
+                    {dialog.conflicts.length > 6 && (
+                      <li>
+                        …e altri {dialog.conflicts.length - 6} elementi in conflitto.
+                      </li>
+                    )}
+                  </ul>
+                </div>
+              )}
+
               <div className="flex items-start gap-2 rounded-md border border-emerald-200 bg-emerald-50/70 px-3 py-2 text-xs text-emerald-900">
                 <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700" />
                 <span>
