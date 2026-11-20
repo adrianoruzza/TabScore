@@ -47,6 +47,12 @@ import {
   STATUS_META,
 } from '../utils/calculations';
 import { getClassColorOption } from '../utils/classColors';
+import {
+  buildFolderDeliveryDateColorMap,
+  getDeliveryDateColor,
+  normalizeDeliveryDateKey,
+  type DeliveryDateColor,
+} from '../utils/deliveryDateColors';
 import { getGradeColorStyle } from '../utils/gradeColors';
 import { isPdfDataUrl } from '../utils/pdfViewer';
 import { CellPopover } from './CellPopover';
@@ -485,6 +491,20 @@ export function GradeTable({
     }
     return map;
   }, [classData]);
+
+  const folderDateColorMaps = useMemo(() => {
+    const byFolder = new Map<string, Map<string, DeliveryDateColor>>();
+    for (const folder of classData.folders) {
+      const dates: Array<string | undefined> = [];
+      for (const stu of classData.students) {
+        dates.push(
+          classData.folderRecords[stu.id]?.[folder.id]?.actualDeliveryDate
+        );
+      }
+      byFolder.set(folder.id, buildFolderDeliveryDateColorMap(dates));
+    }
+    return byFolder;
+  }, [classData.folders, classData.students, classData.folderRecords]);
 
   // Assign each plate to a folder group index for subtle visual grouping
   const plateGroupMap = useMemo(() => {
@@ -1647,6 +1667,13 @@ export function GradeTable({
                         calc.penaltyNoTotal +
                         calc.penaltyMissingTotal +
                         calc.penaltyDelayTotal;
+                      const folderDateMap = folderDateColorMaps.get(f.id);
+                      const deliveryDateColor = folderDateMap
+                        ? getDeliveryDateColor(
+                            rec.actualDeliveryDate,
+                            folderDateMap
+                          )
+                        : null;
 
                       return (
                         <FragmentFolderCells
@@ -1655,6 +1682,7 @@ export function GradeTable({
                           folder={f}
                           dims={dims}
                           actualDeliveryDate={rec.actualDeliveryDate}
+                          deliveryDateColor={deliveryDateColor}
                           status={rec.status}
                           manualDelayDays={rec.manualDelayDays ?? 0}
                           initialAverage={calc.initialAverage}
@@ -2163,6 +2191,7 @@ const FragmentFolderCells = memo(function FragmentFolderCells({
   folder,
   dims,
   actualDeliveryDate,
+  deliveryDateColor,
   status,
   manualDelayDays,
   initialAverage,
@@ -2185,6 +2214,7 @@ const FragmentFolderCells = memo(function FragmentFolderCells({
   folder: FolderDelivery;
   dims: FixedTableDims;
   actualDeliveryDate: string;
+  deliveryDateColor: DeliveryDateColor | null;
   status: FolderDeliveryStatus;
   manualDelayDays: number;
   initialAverage: number | null;
@@ -2204,16 +2234,10 @@ const FragmentFolderCells = memo(function FragmentFolderCells({
   onOpenDetail: (studentId: string, folder: FolderDelivery) => void;
 }) {
   const hasDeliveredDate = hasValidDeliveryDate(actualDeliveryDate);
-  const dateColorClass =
-    status === 'consegnata'
-      ? 'text-emerald-800'
-      : status === 'consegnata_ritardo'
-      ? 'text-amber-800'
-      : status === 'non_consegnata'
-      ? 'text-rose-700'
-      : hasDeliveredDate
-      ? 'text-emerald-900'
-      : 'text-slate-500';
+  const normalizedDateKey = normalizeDeliveryDateKey(actualDeliveryDate);
+  const effectiveDateColor = hasDeliveredDate ? deliveryDateColor : null;
+  const emptyDateColorClass =
+    status === 'non_consegnata' ? 'text-rose-700' : 'text-slate-500';
   const rowHighlightShadow = isRowHighlighted
     ? 'shadow-[inset_0_2px_0_0_#2563eb,inset_0_-2px_0_0_#2563eb]'
     : '';
@@ -2233,15 +2257,26 @@ const FragmentFolderCells = memo(function FragmentFolderCells({
 
   return (
     <>
-      {/* 1. Data effettiva (GG-mmm) */}
+      {/* 1. Data effettiva (GG-mmm) — colore pastello univoco per ciascuna data distinta */}
       <td
         style={{
           width: dims.dateColW,
           minWidth: dims.dateColW,
           maxWidth: dims.dateColW,
+          ...(effectiveDateColor
+            ? {
+                backgroundColor: isRowDimmed
+                  ? effectiveDateColor.dimmedBg
+                  : effectiveDateColor.bg,
+              }
+            : {}),
         }}
         data-folder-delivered-date={hasDeliveredDate ? 'true' : 'false'}
-        className={`h-[34px] border-r border-b border-l-2 border-slate-200 border-l-blue-300 border-r-blue-100 p-0 align-middle transition-colors duration-150 ${folderFieldsCellBg} ${rowHighlightShadow}`}
+        data-delivery-date-key={normalizedDateKey ?? ''}
+        data-delivery-date-color={effectiveDateColor?.id ?? ''}
+        className={`h-[34px] border-r border-b border-l-2 border-slate-200 border-l-blue-300 border-r-blue-100 p-0 align-middle transition-colors duration-150 ${
+          effectiveDateColor ? '' : normalCellBg
+        } ${rowHighlightShadow}`}
       >
         <button
           type="button"
@@ -2252,11 +2287,20 @@ const FragmentFolderCells = memo(function FragmentFolderCells({
               e.currentTarget.getBoundingClientRect()
             )
           }
+          style={
+            effectiveDateColor ? { color: effectiveDateColor.text } : undefined
+          }
           title={`${studentName} · ${folderTitle}: clicca per modificare data effettiva, ritardo (0–10) e stato consegna`}
           className={`flex h-full w-full items-center justify-center p-0 font-mono text-[10.5px] tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-600 ${
-            hasDeliveredDate ? 'hover:bg-emerald-100/60' : 'hover:bg-blue-50/60'
-          } ${dateColorClass} ${
-            isDateSelected ? 'bg-blue-50 ring-2 ring-inset ring-blue-700' : ''
+            effectiveDateColor
+              ? 'font-semibold hover:brightness-95'
+              : `hover:bg-blue-50/60 ${emptyDateColorClass}`
+          } ${
+            isDateSelected
+              ? effectiveDateColor
+                ? 'ring-2 ring-inset ring-blue-700'
+                : 'bg-blue-50 ring-2 ring-inset ring-blue-700'
+              : ''
           }`}
         >
           {actualDeliveryDate

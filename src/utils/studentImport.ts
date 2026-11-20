@@ -249,7 +249,7 @@ export function splitSingleFullName(
   }
 }
 
-function getExcelColLetter(idx: number): string {
+export function getExcelColLetter(idx: number): string {
   let n = idx;
   let label = '';
   while (n >= 0) {
@@ -432,7 +432,7 @@ export function extractCandidatesFromExcelSheet(
   return { candidates, unrecognizedCount };
 }
 
-function decodeTextBuffer(buffer: ArrayBuffer): string {
+export function decodeTextBuffer(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
   try {
     return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
@@ -500,7 +500,7 @@ function parseTxtLines(
 /**
  * Local binary Word (.doc OLE2) text extraction using XLSX.CFB + Word FIB/PieceTable fallback.
  */
-function extractTextFromLegacyDoc(buffer: ArrayBuffer): string {
+export function extractTextFromLegacyDoc(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
   const cfbLib =
     XLSX.CFB ??

@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   Copy,
   FileSpreadsheet,
+  FileText,
   GripVertical,
   Pencil,
   Plus,
@@ -13,6 +14,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useState, type FormEvent } from 'react';
 import type {
+  ExternalPlateEntry,
   PlateImportMode,
   PlateImportResult,
 } from '../hooks/useGradebookStore';
@@ -22,6 +24,7 @@ import {
   getClassColorOption,
   pickNextDistinctClassColorId,
 } from '../utils/classColors';
+import { PlateImportModal } from './PlateImportModal';
 import { StudentImportModal } from './StudentImportModal';
 
 interface ClassManagerModalProps {
@@ -35,6 +38,8 @@ interface ClassManagerModalProps {
     color: string;
     sourcePlatesClassId?: string;
     includePlateAttachments?: boolean;
+    initialPlates?: ExternalPlateEntry[];
+    initialPlatesSourceFile?: string;
     initialStudents?: Array<{ lastName: string; firstName: string }>;
     initialStudentsSourceFile?: string;
   }) => void;
@@ -55,6 +60,12 @@ interface ClassManagerModalProps {
     mode: PlateImportMode,
     includeAttachments?: boolean
   ) => PlateImportResult;
+  onImportPlatesFromFile: (
+    targetClassId: string,
+    entries: ExternalPlateEntry[],
+    mode: PlateImportMode,
+    sourceFileName?: string
+  ) => PlateImportResult;
   onClose: () => void;
 }
 
@@ -69,6 +80,7 @@ export function ClassManagerModal({
   onDeleteClass,
   onImportStudents,
   onImportPlatesFromClass,
+  onImportPlatesFromFile,
   onClose,
 }: ClassManagerModalProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -79,6 +91,9 @@ export function ClassManagerModal({
   );
   const [createSourcePlatesClassId, setCreateSourcePlatesClassId] = useState('');
   const [createIncludeAttachments, setCreateIncludeAttachments] = useState(false);
+  const [stagedPlates, setStagedPlates] = useState<ExternalPlateEntry[]>([]);
+  const [stagedPlatesFileName, setStagedPlatesFileName] = useState('');
+  const [createPlatesImportOpen, setCreatePlatesImportOpen] = useState(false);
   const [stagedStudents, setStagedStudents] = useState<
     Array<{ lastName: string; firstName: string }>
   >([]);
@@ -92,8 +107,11 @@ export function ClassManagerModal({
   const [draggedClassIdx, setDraggedClassIdx] = useState<number | null>(null);
   const [dropInsertionIdx, setDropInsertionIdx] = useState<number | null>(null);
 
-  // Import plates onto an existing class
+  // Import plates onto an existing class (from another class or external file)
   const [plateImportTargetId, setPlateImportTargetId] = useState<string | null>(null);
+  const [filePlateImportTargetId, setFilePlateImportTargetId] = useState<
+    string | null
+  >(null);
   const [plateImportSourceId, setPlateImportSourceId] = useState('');
   const [plateImportMode, setPlateImportMode] = useState<PlateImportMode>('append');
   const [plateImportIncludeAttachments, setPlateImportIncludeAttachments] =
@@ -112,6 +130,8 @@ export function ClassManagerModal({
 
   const plateImportTargetClass =
     classes.find((c) => c.id === plateImportTargetId) ?? null;
+  const filePlateImportTargetClass =
+    classes.find((c) => c.id === filePlateImportTargetId) ?? null;
   const plateImportSourceOptions = plateImportTargetClass
     ? classes.filter(
         (c) => c.id !== plateImportTargetClass.id && c.plates.length > 0
@@ -131,6 +151,9 @@ export function ClassManagerModal({
     setColor(pickNextDistinctClassColorId(classes.map((c) => c.color)));
     setCreateSourcePlatesClassId('');
     setCreateIncludeAttachments(false);
+    setStagedPlates([]);
+    setStagedPlatesFileName('');
+    setCreatePlatesImportOpen(false);
     setStagedStudents([]);
     setStagedStudentsFileName('');
     setCreateStudentsImportOpen(false);
@@ -143,6 +166,8 @@ export function ClassManagerModal({
     if (!open) {
       setImportModalOpen(false);
       setCreateStudentsImportOpen(false);
+      setCreatePlatesImportOpen(false);
+      setFilePlateImportTargetId(null);
       setImportNotice('');
       setPlateImportTargetId(null);
       setPlateImportSourceId('');
@@ -157,13 +182,28 @@ export function ClassManagerModal({
   }, [open]);
 
   useEffect(() => {
-    if (!open || importModalOpen || createStudentsImportOpen) return;
+    if (
+      !open ||
+      importModalOpen ||
+      createStudentsImportOpen ||
+      createPlatesImportOpen ||
+      Boolean(filePlateImportTargetId)
+    ) {
+      return;
+    }
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, importModalOpen, createStudentsImportOpen, onClose]);
+  }, [
+    open,
+    importModalOpen,
+    createStudentsImportOpen,
+    createPlatesImportOpen,
+    filePlateImportTargetId,
+    onClose,
+  ]);
 
   if (!open) return null;
 
@@ -182,6 +222,9 @@ export function ClassManagerModal({
     setColor(pickNextDistinctClassColorId(classes.map((c) => c.color)));
     setCreateSourcePlatesClassId('');
     setCreateIncludeAttachments(false);
+    setStagedPlates([]);
+    setStagedPlatesFileName('');
+    setCreatePlatesImportOpen(false);
     setStagedStudents([]);
     setStagedStudentsFileName('');
     setCreateStudentsImportOpen(false);
@@ -192,13 +235,19 @@ export function ClassManagerModal({
     const candidates = classes.filter(
       (c) => c.id !== targetCls.id && c.plates.length > 0
     );
-    setPlateImportTargetId(targetCls.id);
-    setPlateImportSourceId(candidates[0]?.id ?? '');
-    setPlateImportMode(targetCls.plates.length === 0 ? 'append' : 'append');
-    setPlateImportIncludeAttachments(false);
-    setPlateImportConfirmReplace(false);
     setPlateImportError('');
     setPlateImportSuccess('');
+    setPlateImportConfirmReplace(false);
+    if (candidates.length === 0) {
+      // No other classes have plates: open external file importer directly
+      setPlateImportTargetId(null);
+      setFilePlateImportTargetId(targetCls.id);
+      return;
+    }
+    setPlateImportTargetId(targetCls.id);
+    setPlateImportSourceId(candidates[0]?.id ?? '');
+    setPlateImportMode('append');
+    setPlateImportIncludeAttachments(false);
   };
 
   const handleConfirmPlateImport = () => {
@@ -263,7 +312,12 @@ export function ClassManagerModal({
         name,
         schoolYear,
         color,
-        ...(createSourcePlatesClassId
+        ...(stagedPlates.length > 0
+          ? {
+              initialPlates: stagedPlates,
+              initialPlatesSourceFile: stagedPlatesFileName,
+            }
+          : createSourcePlatesClassId
           ? {
               sourcePlatesClassId: createSourcePlatesClassId,
               includePlateAttachments: createIncludeAttachments,
@@ -351,6 +405,12 @@ export function ClassManagerModal({
                 <span>{plateImportSuccess}</span>
               </div>
             )}
+            {plateImportError && !plateImportTargetClass && (
+              <div className="mt-2 flex items-center gap-2 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-800">
+                <AlertTriangle className="h-4 w-4 shrink-0 text-rose-600" />
+                <span>{plateImportError}</span>
+              </div>
+            )}
             <div
               className="mt-2 divide-y divide-slate-200 rounded-md border border-slate-200"
               onDragLeave={(e) => {
@@ -367,9 +427,6 @@ export function ClassManagerModal({
                 classes.map((cls, idx) => {
                   const isActive = cls.id === activeClassId;
                   const colorTheme = getClassColorOption(cls.color, idx);
-                  const hasOtherClassesWithPlates = classes.some(
-                    (other) => other.id !== cls.id && other.plates.length > 0
-                  );
                   const canReorder = classes.length > 1;
                   const isDraggingThis = draggedClassIdx === idx;
                   const showTopIndicator =
@@ -507,17 +564,15 @@ export function ClassManagerModal({
                       </div>
 
                       <div className="flex flex-wrap items-center gap-1.5">
-                        {hasOtherClassesWithPlates && (
-                          <button
-                            type="button"
-                            onClick={() => openPlateImportForClass(cls)}
-                            title={`Importa elenco tavole in "${cls.name}" da un'altra classe`}
-                            className="inline-flex items-center gap-1 rounded border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs font-medium text-blue-800 hover:bg-blue-100"
-                          >
-                            <Copy className="h-3.5 w-3.5" />
-                            Importa tavole
-                          </button>
-                        )}
+                        <button
+                          type="button"
+                          onClick={() => openPlateImportForClass(cls)}
+                          title={`Importa elenco tavole in "${cls.name}" da file esterno o da un'altra classe`}
+                          className="inline-flex items-center gap-1 rounded border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs font-medium text-blue-800 hover:bg-blue-100"
+                        >
+                          <Copy className="h-3.5 w-3.5" />
+                          Importa tavole
+                        </button>
                         <button
                           type="button"
                           onClick={() => startEdit(cls, idx)}
@@ -541,16 +596,16 @@ export function ClassManagerModal({
               )}
             </div>
 
-            {/* Panel to import plates from another class into an existing class */}
+            {/* Unified panel to import plates into an existing class (external file or another class) */}
             {plateImportTargetClass && (
               <div className="mt-3 space-y-3 rounded-md border border-blue-200 bg-blue-50/60 p-4">
                 <div className="flex items-start justify-between gap-2">
                   <div>
                     <h4 className="text-xs font-semibold text-slate-900">
-                      Importa elenco tavole in "{plateImportTargetClass.name}"
+                      Importa elenco tavole in &quot;{plateImportTargetClass.name}&quot;
                     </h4>
                     <p className="mt-0.5 text-[11px] text-slate-600">
-                      Verranno copiati solo i riferimenti delle tavole (numeri, titoli, date e note). Studenti, voti, consegne e statistiche dell&apos;altra classe non vengono toccati.
+                      Importa da un file esterno (Excel, Word o TXT) con anteprima modificabile, oppure copia la struttura delle tavole da un&apos;altra classe. Studenti, voti, consegne e statistiche non vengono toccati.
                     </p>
                   </div>
                   <button
@@ -565,6 +620,37 @@ export function ClassManagerModal({
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
+                </div>
+
+                {/* External file source option */}
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-blue-200 bg-white px-3 py-2.5">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-semibold text-slate-900">
+                      Da file esterno (.xlsx, .xls, .docx, .doc, .txt)
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-slate-500">
+                      Riconoscimento automatico dei titoli con anteprima, modifica, riordino e scelta tra aggiunta o sostituzione.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFilePlateImportTargetId(plateImportTargetClass.id);
+                      setPlateImportTargetId(null);
+                      setPlateImportConfirmReplace(false);
+                      setPlateImportError('');
+                    }}
+                    className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-blue-700 px-3 text-xs font-medium text-white hover:bg-blue-800 whitespace-nowrap"
+                  >
+                    <FileText className="h-3.5 w-3.5" />
+                    Importa da file
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-2 text-[11px] font-medium text-slate-500">
+                  <span className="h-px flex-1 bg-blue-200/80" />
+                  <span>oppure da un&apos;altra classe</span>
+                  <span className="h-px flex-1 bg-blue-200/80" />
                 </div>
 
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -813,49 +899,127 @@ export function ClassManagerModal({
               </div>
             )}
 
-            {/* Optional plate import on class creation */}
-            {!editingId && classesWithPlates.length > 0 && (
-              <div className="space-y-2 rounded-md border border-slate-200 bg-slate-50/70 p-3">
-                <label
-                  htmlFor="create-import-plates-select"
-                  className="block text-xs font-medium text-slate-700"
-                >
-                  Importa elenco tavole da una classe esistente (opzionale)
-                </label>
-                <select
-                  id="create-import-plates-select"
-                  value={createSourcePlatesClassId}
-                  onChange={(e) => {
-                    setCreateSourcePlatesClassId(e.target.value);
-                    setCreateIncludeAttachments(false);
-                  }}
-                  className="h-9 w-full rounded-md border border-slate-300 bg-white px-2.5 text-xs font-medium text-slate-900 focus:border-blue-600 focus:outline-none"
-                >
-                  <option value="">Nessuna (inizia senza tavole)</option>
-                  {classesWithPlates.map((cls) => (
-                    <option key={cls.id} value={cls.id}>
-                      {cls.name} ({cls.schoolYear}) — {cls.plates.length} tavole
-                    </option>
-                  ))}
-                </select>
-                {createSourceClass && (
-                  <div className="space-y-1.5 pt-0.5">
-                    {createSourceHasAttachments && (
-                      <label className="flex items-center gap-2 text-xs text-slate-700">
-                        <input
-                          type="checkbox"
-                          checked={createIncludeAttachments}
-                          onChange={(e) =>
-                            setCreateIncludeAttachments(e.target.checked)
-                          }
-                          className="h-3.5 w-3.5 rounded border-slate-300 text-blue-700"
-                        />
-                        Copia anche immagini/PDF allegati delle tavole
-                      </label>
-                    )}
-                    <p className="text-[11px] text-slate-500">
-                      Verranno importate le {createSourceClass.plates.length} tavole (numeri, titoli, date e note). Studenti, voti, consegne e statistiche non verranno copiati.
+            {/* Optional plate import on class creation (external file or existing class) */}
+            {!editingId && (
+              <div className="space-y-3 rounded-md border border-slate-200 bg-slate-50/70 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-xs font-medium text-slate-700">
+                      Elenco tavole (opzionale)
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-slate-500">
+                      Importa i titoli delle tavole da file Excel (.xlsx, .xls), Word (.docx, .doc) o TXT con anteprima modificabile.
                     </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setCreatePlatesImportOpen(true)}
+                    className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-blue-300 bg-blue-50 px-3 text-xs font-medium text-blue-900 hover:bg-blue-100 whitespace-nowrap"
+                  >
+                    <FileText className="h-3.5 w-3.5 text-blue-700" />
+                    Importa tavole da file
+                  </button>
+                </div>
+
+                {stagedPlates.length > 0 && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-blue-200 bg-blue-50/80 px-3 py-2 text-xs">
+                    <div className="min-w-0 flex-1 text-blue-950">
+                      <div className="flex items-center gap-1.5 font-semibold">
+                        <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-blue-600" />
+                        <span>
+                          {stagedPlates.length}{' '}
+                          {stagedPlates.length === 1
+                            ? 'tavola pronta'
+                            : 'tavole pronte'}
+                          {stagedPlatesFileName
+                            ? ` da "${stagedPlatesFileName}"`
+                            : ''}
+                        </span>
+                      </div>
+                      <p className="mt-0.5 truncate text-[11px] text-blue-800">
+                        {stagedPlates
+                          .slice(0, 4)
+                          .map((p, i) => `T${i + 1} ${p.title}`)
+                          .join(' · ')}
+                        {stagedPlates.length > 4
+                          ? ` (+ altre ${stagedPlates.length - 4})`
+                          : ''}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setCreatePlatesImportOpen(true)}
+                        className="rounded border border-blue-300 bg-white px-2 py-1 text-[11px] font-medium text-blue-900 hover:bg-blue-100"
+                      >
+                        Modifica
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setStagedPlates([]);
+                          setStagedPlatesFileName('');
+                        }}
+                        className="rounded border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-50 hover:text-rose-700"
+                      >
+                        Rimuovi
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {classesWithPlates.length > 0 && (
+                  <div className="space-y-1.5 border-t border-slate-200/80 pt-2.5">
+                    <label
+                      htmlFor="create-import-plates-select"
+                      className="block text-[11px] font-medium text-slate-600"
+                    >
+                      Oppure importa elenco tavole da una classe esistente
+                    </label>
+                    <select
+                      id="create-import-plates-select"
+                      value={createSourcePlatesClassId}
+                      onChange={(e) => {
+                        const nextId = e.target.value;
+                        setCreateSourcePlatesClassId(nextId);
+                        setCreateIncludeAttachments(false);
+                        if (nextId) {
+                          setStagedPlates([]);
+                          setStagedPlatesFileName('');
+                        }
+                      }}
+                      className="h-9 w-full rounded-md border border-slate-300 bg-white px-2.5 text-xs font-medium text-slate-900 focus:border-blue-600 focus:outline-none"
+                    >
+                      <option value="">Nessuna classe di origine</option>
+                      {classesWithPlates.map((cls) => (
+                        <option key={cls.id} value={cls.id}>
+                          {cls.name} ({cls.schoolYear}) — {cls.plates.length}{' '}
+                          tavole
+                        </option>
+                      ))}
+                    </select>
+                    {createSourceClass && (
+                      <div className="space-y-1.5 pt-0.5">
+                        {createSourceHasAttachments && (
+                          <label className="flex items-center gap-2 text-xs text-slate-700">
+                            <input
+                              type="checkbox"
+                              checked={createIncludeAttachments}
+                              onChange={(e) =>
+                                setCreateIncludeAttachments(e.target.checked)
+                              }
+                              className="h-3.5 w-3.5 rounded border-slate-300 text-blue-700"
+                            />
+                            Copia anche immagini/PDF allegati delle tavole
+                          </label>
+                        )}
+                        <p className="text-[11px] text-slate-500">
+                          Verranno importate le {createSourceClass.plates.length}{' '}
+                          tavole (numeri, titoli, date e note). Studenti, voti,
+                          consegne e statistiche non verranno copiati.
+                        </p>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -955,6 +1119,67 @@ export function ClassManagerModal({
           setStagedStudentsFileName(fileName);
         }}
         onClose={() => setCreateStudentsImportOpen(false)}
+      />
+
+      <PlateImportModal
+        open={createPlatesImportOpen}
+        existingPlates={[]}
+        targetClassName={name.trim() || 'Nuova classe'}
+        targetSchoolYear={schoolYear.trim() || '2026/2027'}
+        allowReplaceMode={false}
+        initialStagedEntries={stagedPlates}
+        initialStagedFileName={stagedPlatesFileName}
+        confirmButtonLabel="Conferma elenco tavole"
+        footerNote="Verranno associate solo le tavole elencate (titoli e ordine) alla nuova classe, senza studenti, voti o consegne."
+        onConfirm={(entries, _mode, fileName) => {
+          setStagedPlates(entries);
+          setStagedPlatesFileName(fileName);
+          setCreateSourcePlatesClassId('');
+          setCreateIncludeAttachments(false);
+        }}
+        onClose={() => setCreatePlatesImportOpen(false)}
+      />
+
+      <PlateImportModal
+        open={Boolean(filePlateImportTargetClass)}
+        targetClass={filePlateImportTargetClass}
+        allowReplaceMode
+        initialMode="append"
+        onConfirm={(entries, mode, fileName) => {
+          if (!filePlateImportTargetClass) return;
+          const res = onImportPlatesFromFile(
+            filePlateImportTargetClass.id,
+            entries,
+            mode,
+            fileName
+          );
+          if (!res.ok) {
+            setPlateImportError(
+              res.error ??
+                'Impossibile completare l’importazione delle tavole dal file.'
+            );
+            setPlateImportSuccess('');
+            return;
+          }
+          const skippedNote =
+            res.skippedCount > 0
+              ? ` (${res.skippedCount} ${
+                  res.skippedCount === 1
+                    ? 'tavola già presente saltata'
+                    : 'tavole già presenti saltate'
+                })`
+              : '';
+          const actionVerb =
+            mode === 'replace' ? 'Sostituito elenco con' : 'Importate';
+          const sourceLabel = fileName ? ` da "${fileName}"` : '';
+          setPlateImportSuccess(
+            `${actionVerb} ${res.importedCount} ${
+              res.importedCount === 1 ? 'tavola' : 'tavole'
+            } in "${filePlateImportTargetClass.name}"${sourceLabel}${skippedNote}.`
+          );
+          setPlateImportError('');
+        }}
+        onClose={() => setFilePlateImportTargetId(null)}
       />
     </div>
   );

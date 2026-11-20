@@ -33,6 +33,10 @@ import {
   sortPlates,
   STATUS_META,
 } from '../utils/calculations';
+import {
+  buildFolderDeliveryDateColorMap,
+  getDeliveryDateColor,
+} from '../utils/deliveryDateColors';
 import { getGradeColorStyle } from '../utils/gradeColors';
 import { isPdfDataUrl } from '../utils/pdfViewer';
 import { PlateImageViewerModal } from './PlateImageViewerModal';
@@ -427,47 +431,74 @@ export function MobilePlateView({
             );
           })
         ) : activeFolder ? (
-          students.map((stu, idx) => {
-            const rec =
-              classData.folderRecords[stu.id]?.[activeFolder.id] ??
-              EMPTY_FOLDER_RECORD;
-            const calc = calculateFolderEvaluation(
-              classData,
-              stu.id,
-              activeFolder
+          (() => {
+            const activeFolderDateColorMap = buildFolderDeliveryDateColorMap(
+              students.map(
+                (s) =>
+                  classData.folderRecords[s.id]?.[activeFolder.id]
+                    ?.actualDeliveryDate
+              )
             );
-            const hasSupportNeeds = Boolean(
-              stu.supportNeeds && stu.supportNeeds.length > 0
-            );
-            const hasDeliveredDate = hasValidDeliveryDate(rec.actualDeliveryDate);
-            const isFolderNotDelivered =
-              !hasDeliveredDate &&
-              (rec.status === 'da_consegnare' || rec.status === 'non_consegnata');
-            return (
-              <button
-                key={stu.id}
-                type="button"
-                onClick={() => onOpenFolderStudent(stu.id, activeFolder)}
-                className="flex w-full items-center justify-between gap-3 px-3.5 py-2.5 text-left hover:bg-blue-50/40"
-              >
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-medium text-slate-900">
-                    <span className="mr-1.5 font-mono text-xs text-slate-400">
-                      {idx + 1}.
-                      {hasSupportNeeds && (
-                        <span className="ml-0.5 font-sans font-bold text-amber-600">
-                          *
+            return students.map((stu, idx) => {
+              const rec =
+                classData.folderRecords[stu.id]?.[activeFolder.id] ??
+                EMPTY_FOLDER_RECORD;
+              const calc = calculateFolderEvaluation(
+                classData,
+                stu.id,
+                activeFolder
+              );
+              const hasSupportNeeds = Boolean(
+                stu.supportNeeds && stu.supportNeeds.length > 0
+              );
+              const hasDeliveredDate = hasValidDeliveryDate(
+                rec.actualDeliveryDate
+              );
+              const deliveryDateColor = hasDeliveredDate
+                ? getDeliveryDateColor(
+                    rec.actualDeliveryDate,
+                    activeFolderDateColorMap
+                  )
+                : null;
+              const isFolderNotDelivered =
+                !hasDeliveredDate &&
+                (rec.status === 'da_consegnare' ||
+                  rec.status === 'non_consegnata');
+              return (
+                <button
+                  key={stu.id}
+                  type="button"
+                  onClick={() => onOpenFolderStudent(stu.id, activeFolder)}
+                  className="flex w-full items-center justify-between gap-3 px-3.5 py-2.5 text-left hover:bg-blue-50/40"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium text-slate-900">
+                      <span className="mr-1.5 font-mono text-xs text-slate-400">
+                        {idx + 1}.
+                        {hasSupportNeeds && (
+                          <span className="ml-0.5 font-sans font-bold text-amber-600">
+                            *
+                          </span>
+                        )}
+                      </span>
+                      {stu.lastName} {stu.firstName}
+                    </div>
+                    <div className="mt-0.5 text-xs text-slate-500">
+                      {FOLDER_STATUS_META[rec.status].label} ·{' '}
+                      {rec.actualDeliveryDate && deliveryDateColor ? (
+                        <span
+                          style={{
+                            backgroundColor: deliveryDateColor.bg,
+                            color: deliveryDateColor.text,
+                          }}
+                          className="inline-block rounded px-1.5 py-0.5 font-mono text-[11px] font-semibold tabular-nums"
+                        >
+                          {formatShortMonthDateIt(rec.actualDeliveryDate)}
                         </span>
-                      )}
-                    </span>
-                    {stu.lastName} {stu.firstName}
-                  </div>
-                  <div className="mt-0.5 text-xs text-slate-500">
-                    {FOLDER_STATUS_META[rec.status].label} ·{' '}
-                    {rec.actualDeliveryDate
-                      ? formatShortMonthDateIt(rec.actualDeliveryDate)
-                      : 'Data n.i.'}{' '}
-                    · Rit. {calc.rawDelayDays}g · Media voti{' '}
+                      ) : (
+                        'Data n.i.'
+                      )}{' '}
+                      · Rit. {calc.rawDelayDays}g · Media voti{' '}
                     <strong className="font-mono text-slate-700">
                       {calc.initialAverage !== null
                         ? formatDecimalIt(calc.initialAverage, 2)
@@ -521,9 +552,10 @@ export function MobilePlateView({
                     {calc.isConfirmed && <Lock className="h-3.5 w-3.5 text-blue-700" />}
                   </div>
                 </div>
-              </button>
-            );
-          })
+                </button>
+              );
+            });
+          })()
         ) : (
           <div className="p-8 text-center text-sm text-slate-500">
             Nessuna tavola o cartellina disponibile.

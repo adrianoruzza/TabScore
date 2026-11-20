@@ -283,12 +283,254 @@ export function applyImportPlatesFromClass(
   };
 }
 
+export interface ExternalPlateEntry {
+  title: string;
+  number?: number;
+}
+
+export function buildPlatesFromExternalEntries(
+  entries: ExternalPlateEntry[],
+  options?: {
+    startOrder?: number;
+    reservedNumbers?: Set<number>;
+    existingTitleKeys?: Set<string>;
+  }
+): { plates: Plate[]; skippedCount: number } {
+  const startOrder = options?.startOrder ?? 0;
+  const usedNumbers = new Set<number>(options?.reservedNumbers ?? []);
+  const existingKeys = new Set<string>(options?.existingTitleKeys ?? []);
+  const batchKeys = new Set<string>();
+  let nextSeq =
+    usedNumbers.size > 0 ? Math.max(...Array.from(usedNumbers)) + 1 : 1;
+
+  const plates: Plate[] = [];
+  let skippedCount = 0;
+
+  for (const raw of entries) {
+    const title = raw.title.replace(/\s+/g, ' ').trim();
+    if (!title) continue;
+    const key = normalizePlateTitleKey(title);
+    if (existingKeys.has(key) || batchKeys.has(key)) {
+      skippedCount += 1;
+      continue;
+    }
+    batchKeys.add(key);
+
+    let assignedNumber: number;
+    if (
+      typeof raw.number === 'number' &&
+      Number.isInteger(raw.number) &&
+      raw.number >= 1 &&
+      !usedNumbers.has(raw.number)
+    ) {
+      assignedNumber = raw.number;
+      if (assignedNumber >= nextSeq) {
+        nextSeq = assignedNumber + 1;
+      }
+    } else {
+      while (usedNumbers.has(nextSeq)) {
+        nextSeq += 1;
+      }
+      assignedNumber = nextSeq;
+      nextSeq += 1;
+    }
+    usedNumbers.add(assignedNumber);
+
+    plates.push({
+      id: createId('plt'),
+      number: assignedNumber,
+      order: startOrder + plates.length,
+      title,
+      assignedDate: '',
+      dueDate: '',
+      notes: '',
+    });
+  }
+
+  return { plates, skippedCount };
+}
+
+export function applyImportPlatesFromExternalList(
+  prevState: GradebookStoreState,
+  input: {
+    targetClassId: string;
+    entries: ExternalPlateEntry[];
+    mode: PlateImportMode;
+    sourceFileName?: string;
+    now?: string;
+  }
+): { nextState: GradebookStoreState; result: PlateImportResult } {
+  const { targetClassId, entries, mode, sourceFileName } = input;
+  const targetClass = prevState.classes.find((c) => c.id === targetClassId);
+  if (!targetClass) {
+    return {
+      nextState: prevState,
+      result: {
+        ok: false,
+        importedCount: 0,
+        skippedCount: 0,
+        error: 'Classe di destinazione non trovata.',
+      },
+    };
+  }
+
+  if (entries.length === 0) {
+    return {
+      nextState: prevState,
+      result: {
+        ok: false,
+        importedCount: 0,
+        skippedCount: 0,
+        error: 'Nessuna tavola valida selezionata per l’importazione.',
+      },
+    };
+  }
+
+  const now = input.now ?? new Date().toISOString();
+  const fileLabel = sourceFileName?.trim()
+    ? ` dal file "${sourceFileName.trim()}"`
+    : ' da file esterno';
+
+  if (mode === 'replace') {
+    const { plates: builtPlates, skippedCount } = buildPlatesFromExternalEntries(
+      entries,
+      { startOrder: 0 }
+    );
+    if (builtPlates.length === 0) {
+      return {
+        nextState: prevState,
+        result: {
+          ok: false,
+          importedCount: 0,
+          skippedCount,
+          error: 'Nessun titolo di tavola valido da importare.',
+        },
+      };
+    }
+
+    const nextEvaluations: ClassData['evaluations'] = {};
+    for (const stuId of Object.keys(targetClass.evaluations)) {
+      nextEvaluations[stuId] = {};
+    }
+    const nextFolders = targetClass.folders.map((f) => ({
+      ...f,
+      plateIds: [],
+    }));
+
+    const nextState: GradebookStoreState = {
+      ...prevState,
+      classes: prevState.classes.map((c) =>
+        c.id === targetClassId
+          ? {
+              ...c,
+              plates: builtPlates,
+              evaluations: nextEvaluations,
+              folders: nextFolders,
+              updatedAt: now,
+            }
+          : c
+      ),
+      auditLog: [
+        makeLog(
+          targetClass.id,
+          targetClass.name,
+          'tavola',
+          'Sostituzione elenco tavole da file',
+          `Importate ${builtPlates.length} ${
+            builtPlates.length === 1 ? 'tavola' : 'tavole'
+          }${fileLabel} in modalità sostituzione (studenti e cartelline preservati).`
+        ),
+        ...prevState.auditLog,
+      ].slice(0, 500),
+    };
+
+    return {
+      nextState,
+      result: {
+        ok: true,
+        importedCount: builtPlates.length,
+        skippedCount,
+      },
+    };
+  }
+
+  // Append mode: deduplicate against existing plates & avoid number collisions
+  const existingTitleKeys = new Set(
+    targetClass.plates.map((p) => normalizePlateTitleKey(p.title))
+  );
+  const reservedNumbers = new Set(targetClass.plates.map((p) => p.number));
+  const maxOrder = targetClass.plates.reduce(
+    (max, p, idx) => Math.max(max, p.order ?? idx),
+    -1
+  );
+
+  const { plates: builtPlates, skippedCount } = buildPlatesFromExternalEntries(
+    entries,
+    {
+      startOrder: maxOrder + 1,
+      reservedNumbers,
+      existingTitleKeys,
+    }
+  );
+
+  if (builtPlates.length === 0) {
+    return {
+      nextState: prevState,
+      result: {
+        ok: false,
+        importedCount: 0,
+        skippedCount,
+        error:
+          'Tutte le tavole selezionate sono già presenti in questa classe.',
+      },
+    };
+  }
+
+  const nextState: GradebookStoreState = {
+    ...prevState,
+    classes: prevState.classes.map((c) =>
+      c.id === targetClassId
+        ? {
+            ...c,
+            plates: [...c.plates, ...builtPlates],
+            updatedAt: now,
+          }
+        : c
+    ),
+    auditLog: [
+      makeLog(
+        targetClass.id,
+        targetClass.name,
+        'tavola',
+        'Importazione elenco tavole da file',
+        `Aggiunte ${builtPlates.length} ${
+          builtPlates.length === 1 ? 'tavola' : 'tavole'
+        }${fileLabel}${
+          skippedCount > 0 ? ` (${skippedCount} già presenti saltate)` : ''
+        }.`
+      ),
+      ...prevState.auditLog,
+    ].slice(0, 500),
+  };
+
+  return {
+    nextState,
+    result: {
+      ok: true,
+      importedCount: builtPlates.length,
+      skippedCount,
+    },
+  };
+}
+
 export interface CreateClassInput {
   name: string;
   schoolYear: string;
   color?: string;
   sourcePlatesClassId?: string;
   includePlateAttachments?: boolean;
+  initialPlates?: ExternalPlateEntry[];
+  initialPlatesSourceFile?: string;
   initialStudents?: Array<{ lastName: string; firstName: string }>;
   initialStudentsSourceFile?: string;
 }
@@ -305,11 +547,15 @@ export function applyCreateClass(
   const sourceClass = input.sourcePlatesClassId
     ? prev.classes.find((c) => c.id === input.sourcePlatesClassId)
     : undefined;
-  const importedPlates = sourceClass
-    ? clonePlatesForImport(sourceClass.plates, {
-        includeAttachments: input.includePlateAttachments,
-      })
-    : [];
+  const importedPlates =
+    input.initialPlates && input.initialPlates.length > 0
+      ? buildPlatesFromExternalEntries(input.initialPlates, { startOrder: 0 })
+          .plates
+      : sourceClass
+      ? clonePlatesForImport(sourceClass.plates, {
+          includeAttachments: input.includePlateAttachments,
+        })
+      : [];
 
   // Deduplicate & sanitize initial students (only lastName + firstName, alphabetical)
   const batchKeys = new Set<string>();
@@ -357,7 +603,15 @@ export function applyCreateClass(
   };
 
   const platesNote =
-    sourceClass && importedPlates.length > 0
+    input.initialPlates && input.initialPlates.length > 0 && importedPlates.length > 0
+      ? ` Con ${importedPlates.length} ${
+          importedPlates.length === 1 ? 'tavola importata' : 'tavole importate'
+        }${
+          input.initialPlatesSourceFile?.trim()
+            ? ` da "${input.initialPlatesSourceFile.trim()}"`
+            : ' da file esterno'
+        }.`
+      : sourceClass && importedPlates.length > 0
       ? ` Con ${importedPlates.length} tavole importate da "${sourceClass.name}".`
       : '';
   const studentsNote =
@@ -1332,6 +1586,44 @@ export function useGradebookStore() {
     []
   );
 
+  const importPlatesFromFile = useCallback(
+    (
+      targetClassId: string,
+      entries: ExternalPlateEntry[],
+      mode: PlateImportMode,
+      sourceFileName?: string
+    ): PlateImportResult => {
+      const current = stateRef.current;
+      const { nextState, result } = applyImportPlatesFromExternalList(current, {
+        targetClassId,
+        entries,
+        mode,
+        sourceFileName,
+      });
+      if (!result.ok) {
+        return result;
+      }
+      const savedOk = saveStoreState(nextState);
+      if (!savedOk) {
+        return {
+          ok: false,
+          importedCount: 0,
+          skippedCount: 0,
+          error:
+            'Spazio locale insufficiente per salvare le tavole importate.',
+        };
+      }
+      stateRef.current = nextState;
+      setStoreRecord((prev) => ({
+        state: nextState,
+        mutationSeq: prev.mutationSeq + 1,
+        mutationSource: 'user',
+      }));
+      return result;
+    },
+    []
+  );
+
   const reorderPlate = useCallback(
     (classId: string, plateId: string, direction: 'left' | 'right') => {
       commit((prev) => {
@@ -2124,6 +2416,7 @@ export function useGradebookStore() {
     updatePlateTitle,
     updatePlateImage,
     importPlatesFromClass,
+    importPlatesFromFile,
     reorderPlate,
     deletePlate,
     setCellEvaluation,

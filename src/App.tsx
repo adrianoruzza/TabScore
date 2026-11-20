@@ -12,6 +12,7 @@ import {
 } from './components/ClassSettingsModal';
 import { ClassStatsModal } from './components/ClassStatsModal';
 import { ConfirmDialog } from './components/ConfirmDialog';
+import { DataDashboardView } from './components/data-dashboard/DataDashboardView';
 import { DriveSyncDialogs } from './components/DriveSyncDialogs';
 import { DriveSyncIndicatorButton } from './components/DriveSyncIndicatorButton';
 import { FolderClassStatsModal } from './components/FolderClassStatsModal';
@@ -58,6 +59,9 @@ export default function App() {
   const store = useGradebookStore();
   const { activeClass, state } = store;
 
+  const [activeSection, setActiveSection] = useState<'gradebook' | 'data'>(
+    'gradebook'
+  );
   const [mobileMode, setMobileMode] = useState<'table' | 'cards'>('table');
 
   // Modals & Drawers
@@ -349,7 +353,12 @@ export default function App() {
     <div className="flex h-screen flex-col overflow-hidden bg-slate-50 text-slate-900">
       {/* Top Bar: Brand + Class Switcher & Management Nav */}
       <header className="flex shrink-0 items-center justify-between gap-4 border-b border-slate-200 bg-white px-4 py-2 sm:px-5">
-        <div className="flex items-center gap-2.5 whitespace-nowrap shrink-0">
+        <button
+          type="button"
+          onClick={() => setActiveSection('gradebook')}
+          className="flex items-center gap-2.5 whitespace-nowrap shrink-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 rounded"
+          title="Torna al registro"
+        >
           <img
             src={OFFICIAL_TABSCORE_ICON}
             alt=""
@@ -359,7 +368,7 @@ export default function App() {
           <span className="font-display text-base font-bold tracking-tight text-slate-900">
             TabScore
           </span>
-        </div>
+        </button>
 
         <div className="hidden md:flex min-w-0 items-center gap-4 lg:gap-6">
           <div className="flex items-center gap-2 shrink-0">
@@ -377,7 +386,12 @@ export default function App() {
             <select
               id="class-selector"
               value={activeClass?.id ?? ''}
-              onChange={(e) => store.setActiveClass(e.target.value)}
+              onChange={(e) => {
+                store.setActiveClass(e.target.value);
+                if (activeSection === 'data') {
+                  setActiveSection('gradebook');
+                }
+              }}
               disabled={state.classes.length === 0}
               style={
                 activeClassColor
@@ -434,6 +448,22 @@ export default function App() {
             >
               Cronologia
             </button>
+            <button
+              type="button"
+              onClick={() =>
+                setActiveSection((prev) =>
+                  prev === 'data' ? 'gradebook' : 'data'
+                )
+              }
+              aria-current={activeSection === 'data' ? 'page' : undefined}
+              className={`underline-offset-4 whitespace-nowrap shrink-0 transition-colors ${
+                activeSection === 'data'
+                  ? 'font-semibold text-blue-700 underline'
+                  : 'hover:text-slate-900 hover:underline'
+              }`}
+            >
+              Dati
+            </button>
           </nav>
         </div>
 
@@ -477,7 +507,12 @@ export default function App() {
             <select
               id="class-selector-mobile"
               value={activeClass?.id ?? ''}
-              onChange={(e) => store.setActiveClass(e.target.value)}
+              onChange={(e) => {
+                store.setActiveClass(e.target.value);
+                if (activeSection === 'data') {
+                  setActiveSection('gradebook');
+                }
+              }}
               disabled={state.classes.length === 0}
               style={
                 activeClassColor
@@ -536,9 +571,25 @@ export default function App() {
             >
               Cronologia
             </button>
+            <button
+              type="button"
+              onClick={() =>
+                setActiveSection((prev) =>
+                  prev === 'data' ? 'gradebook' : 'data'
+                )
+              }
+              aria-current={activeSection === 'data' ? 'page' : undefined}
+              className={`underline-offset-4 ${
+                activeSection === 'data'
+                  ? 'font-semibold text-blue-700 underline'
+                  : 'hover:text-slate-900 hover:underline'
+              }`}
+            >
+              Dati
+            </button>
           </div>
 
-          {activeClass && (
+          {activeSection === 'gradebook' && activeClass && (
             <div className="flex items-center rounded border border-slate-300 bg-white p-0.5 sm:hidden">
               <button
                 type="button"
@@ -567,8 +618,17 @@ export default function App() {
         </div>
       </section>
 
-      {/* Main Content: Spreadsheet Table */}
-      <main className="flex min-h-0 flex-1 flex-col px-3 pt-2.5 pb-3 sm:px-5 sm:pt-3 sm:pb-4">
+      {/* Main Content: Dati Dashboard or Spreadsheet Table */}
+      {activeSection === 'data' ? (
+        <main className="flex min-h-0 flex-1 flex-col">
+          <DataDashboardView
+            classes={state.classes}
+            onBackToGradebook={() => setActiveSection('gradebook')}
+            onOpenClassManager={() => setClassManagerOpen(true)}
+          />
+        </main>
+      ) : (
+        <main className="flex min-h-0 flex-1 flex-col px-3 pt-2.5 pb-3 sm:px-5 sm:pt-3 sm:pb-4">
         {!activeClass ? (
           <div className="flex flex-1 flex-col items-center justify-center rounded-lg border border-slate-200 bg-white px-6 py-16 text-center">
             <img
@@ -670,20 +730,25 @@ export default function App() {
             </div>
           </>
         )}
-      </main>
+        </main>
+      )}
 
       {/* Modals & Drawers */}
       <ClassManagerModal
         open={classManagerOpen}
         classes={state.classes}
         activeClassId={activeClass?.id ?? null}
-        onSelectClass={store.setActiveClass}
+        onSelectClass={(classId) => {
+          store.setActiveClass(classId);
+          setActiveSection('gradebook');
+        }}
         onCreateClass={store.createClass}
         onUpdateClass={store.updateClass}
         onReorderClasses={store.reorderClasses}
         onDeleteClass={(cls) => setConfirmTarget({ kind: 'class', cls })}
         onImportStudents={store.importStudents}
         onImportPlatesFromClass={store.importPlatesFromClass}
+        onImportPlatesFromFile={store.importPlatesFromFile}
         onClose={() => setClassManagerOpen(false)}
       />
 
