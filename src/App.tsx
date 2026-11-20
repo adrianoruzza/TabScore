@@ -1,6 +1,8 @@
 import {
   Plus,
+  Redo2,
   Settings,
+  Undo2,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ArchiveModal } from './components/ArchiveModal';
@@ -24,6 +26,8 @@ import { PlateModal } from './components/PlateModal';
 import { PWABanners, PWAInstallButton } from './components/PWAControls';
 import { StudentModal } from './components/StudentModal';
 import { StudentStatsModal } from './components/StudentStatsModal';
+import { ZoomControls, ZoomToastBadge } from './components/ZoomControls';
+import { useAppZoom } from './hooks/useAppZoom';
 import { useGoogleDriveSync } from './hooks/useGoogleDriveSync';
 import { useGradebookStore } from './hooks/useGradebookStore';
 import { usePWAStatus } from './hooks/usePWAStatus';
@@ -50,6 +54,7 @@ type ConfirmTarget =
         lastName: string;
         firstName: string;
         supportNeeds: StudentSupportTag[];
+        exemptFromPenalties: boolean;
       };
     }
   | { kind: 'plate'; plate: Plate }
@@ -58,6 +63,7 @@ type ConfirmTarget =
 export default function App() {
   const store = useGradebookStore();
   const { activeClass, state } = store;
+  const appZoom = useAppZoom();
 
   const [activeSection, setActiveSection] = useState<'gradebook' | 'data'>(
     'gradebook'
@@ -128,6 +134,66 @@ export default function App() {
     mutationSource: store.mutationSource,
     onRestoreState: store.restoreFromCloudArchive,
   });
+
+  // Global keyboard shortcuts for Undo (Ctrl/Cmd+Z) and Redo (Ctrl/Cmd+Y, Ctrl/Cmd+Shift+Z)
+  const isUndoShortcutBlocked = Boolean(
+    studentModal.open ||
+      plateModal.open ||
+      folderConfigModal.open ||
+      settingsOpen ||
+      classManagerOpen ||
+      archiveOpen ||
+      confirmTarget ||
+      driveSync.pendingDialog
+  );
+
+  useEffect(() => {
+    const isEditableTarget = (el: HTMLElement | null): boolean =>
+      Boolean(
+        el &&
+          (el.tagName === 'INPUT' ||
+            el.tagName === 'TEXTAREA' ||
+            el.tagName === 'SELECT' ||
+            el.isContentEditable ||
+            el.closest('[contenteditable="true"]'))
+      );
+
+    const handleGlobalUndoRedo = (e: KeyboardEvent) => {
+      if (isUndoShortcutBlocked) return;
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      if (
+        isEditableTarget(e.target as HTMLElement | null) ||
+        isEditableTarget(document.activeElement as HTMLElement | null)
+      ) {
+        return;
+      }
+      if (document.querySelector('[data-independent-zoom="true"]')) {
+        return;
+      }
+
+      const key = e.key.toLowerCase();
+      if (key === 'z' && !e.shiftKey) {
+        if (store.canUndo) {
+          e.preventDefault();
+          store.undo();
+        }
+      } else if (key === 'y' || (key === 'z' && e.shiftKey)) {
+        if (store.canRedo) {
+          e.preventDefault();
+          store.redo();
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalUndoRedo);
+    return () => window.removeEventListener('keydown', handleGlobalUndoRedo);
+  }, [
+    isUndoShortcutBlocked,
+    store.canUndo,
+    store.canRedo,
+    store.undo,
+    store.redo,
+  ]);
 
   const openSettingsModal = useCallback(
     (tab?: SettingsTab) => {
@@ -467,7 +533,66 @@ export default function App() {
           </nav>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          {/* Undo / Redo */}
+          <div
+            className="inline-flex items-center rounded-md border border-slate-300 bg-white p-0.5"
+            role="group"
+            aria-label="Annulla e ripristina"
+          >
+            <button
+              type="button"
+              disabled={!store.canUndo}
+              onClick={store.undo}
+              title={
+                store.canUndo && store.undoLabel
+                  ? `Annulla: ${store.undoLabel} (Ctrl+Z)`
+                  : 'Annulla (Ctrl+Z)'
+              }
+              aria-label={
+                store.canUndo && store.undoLabel
+                  ? `Annulla: ${store.undoLabel}`
+                  : 'Annulla'
+              }
+              className="inline-flex h-7 w-7 items-center justify-center rounded text-slate-700 transition-colors hover:bg-slate-100 hover:text-slate-950 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-transparent"
+            >
+              <Undo2 className="h-3.5 w-3.5" />
+            </button>
+            <span
+              aria-hidden="true"
+              className="h-4 w-px bg-slate-200"
+            />
+            <button
+              type="button"
+              disabled={!store.canRedo}
+              onClick={store.redo}
+              title={
+                store.canRedo && store.redoLabel
+                  ? `Ripristina: ${store.redoLabel} (Ctrl+Y)`
+                  : 'Ripristina (Ctrl+Y)'
+              }
+              aria-label={
+                store.canRedo && store.redoLabel
+                  ? `Ripristina: ${store.redoLabel}`
+                  : 'Ripristina'
+              }
+              className="inline-flex h-7 w-7 items-center justify-center rounded text-slate-700 transition-colors hover:bg-slate-100 hover:text-slate-950 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-transparent"
+            >
+              <Redo2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
+
+          {/* Interface Zoom Controls */}
+          <ZoomControls
+            zoom={appZoom.zoom}
+            zoomPercent={appZoom.zoomPercent}
+            isDefaultZoom={appZoom.isDefaultZoom}
+            onSetZoom={(next) => appZoom.setZoom(next)}
+            onZoomIn={appZoom.zoomIn}
+            onZoomOut={appZoom.zoomOut}
+            onResetZoom={appZoom.resetZoom}
+          />
+
           <DriveSyncIndicatorButton
             account={driveSync.account}
             status={driveSync.status}
@@ -619,17 +744,25 @@ export default function App() {
       </section>
 
       {/* Main Content: Dati Dashboard or Spreadsheet Table */}
-      {activeSection === 'data' ? (
-        <main className="flex min-h-0 flex-1 flex-col">
-          <DataDashboardView
-            classes={state.classes}
-            onBackToGradebook={() => setActiveSection('gradebook')}
-            onOpenClassManager={() => setClassManagerOpen(true)}
-          />
-        </main>
-      ) : (
-        <main className="flex min-h-0 flex-1 flex-col px-3 pt-2.5 pb-3 sm:px-5 sm:pt-3 sm:pb-4">
-        {!activeClass ? (
+      <main
+        ref={appZoom.workspaceRef}
+        className={`flex min-h-0 flex-1 flex-col overflow-hidden ${
+          activeSection === 'data'
+            ? ''
+            : 'px-3 pt-2.5 pb-3 sm:px-5 sm:pt-3 sm:pb-4'
+        }`}
+      >
+        <div
+          style={appZoom.zoom !== 1 ? { zoom: appZoom.zoom } : undefined}
+          className="flex min-h-0 flex-1 flex-col"
+        >
+          {activeSection === 'data' ? (
+            <DataDashboardView
+              classes={state.classes}
+              onBackToGradebook={() => setActiveSection('gradebook')}
+              onOpenClassManager={() => setClassManagerOpen(true)}
+            />
+          ) : !activeClass ? (
           <div className="flex flex-1 flex-col items-center justify-center rounded-lg border border-slate-200 bg-white px-6 py-16 text-center">
             <img
               src={OFFICIAL_TABSCORE_ICON}
@@ -730,8 +863,8 @@ export default function App() {
             </div>
           </>
         )}
-        </main>
-      )}
+        </div>
+      </main>
 
       {/* Modals & Drawers */}
       <ClassManagerModal
@@ -989,6 +1122,11 @@ export default function App() {
         isUpdating={pwa.isUpdating}
         onApplyUpdate={() => void pwa.applyUpdate()}
         onDismissUpdate={pwa.dismissUpdatePrompt}
+      />
+
+      <ZoomToastBadge
+        zoomPercent={appZoom.zoomPercent}
+        visible={appZoom.isToastVisible}
       />
     </div>
   );

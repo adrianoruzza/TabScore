@@ -395,16 +395,21 @@ function parseDataUrlToBytes(dataUrl: string): {
   mimeType: string;
   bytes: Uint8Array;
 } | null {
-  const match = /^data:([^;,]+);base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
+  const match = /^data:([^;,]+)(?:;[^,]*)?;base64,([\s\S]+)$/.exec(dataUrl);
   if (!match) return null;
-  const mimeType = match[1];
-  const base64 = match[2];
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
+  const mimeType = match[1].trim();
+  const base64 = match[2].replace(/\s+/g, '');
+  if (!base64) return null;
+  try {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return { mimeType, bytes };
+  } catch {
+    return null;
   }
-  return { mimeType, bytes };
 }
 
 function bytesToDataUrl(bytes: Uint8Array, mimeType: string): string {

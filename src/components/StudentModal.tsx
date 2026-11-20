@@ -35,6 +35,7 @@ interface StudentModalProps {
     lastName: string;
     firstName: string;
     supportNeeds: StudentSupportTag[];
+    exemptFromPenalties: boolean;
   }) => void;
   onRequestMoveToClass?: (
     targetClassId: string,
@@ -42,6 +43,7 @@ interface StudentModalProps {
       lastName: string;
       firstName: string;
       supportNeeds: StudentSupportTag[];
+      exemptFromPenalties: boolean;
     }
   ) => void;
   onClose: () => void;
@@ -61,19 +63,25 @@ export function StudentModal({
   const [lastName, setLastName] = useState('');
   const [firstName, setFirstName] = useState('');
   const [supportNeeds, setSupportNeeds] = useState<StudentSupportTag[]>([]);
+  const [exemptFromPenalties, setExemptFromPenalties] = useState(false);
   const [targetClassId, setTargetClassId] = useState('');
   const [error, setError] = useState('');
 
   useEffect(() => {
     if (!open) return;
     if (student) {
+      const initialNeeds = student.supportNeeds ? [...student.supportNeeds] : [];
       setLastName(student.lastName);
       setFirstName(student.firstName);
-      setSupportNeeds(student.supportNeeds ? [...student.supportNeeds] : []);
+      setSupportNeeds(initialNeeds);
+      setExemptFromPenalties(
+        initialNeeds.length > 0 && Boolean(student.exemptFromPenalties)
+      );
     } else {
       setLastName('');
       setFirstName('');
       setSupportNeeds([]);
+      setExemptFromPenalties(false);
     }
     setTargetClassId('');
     setError('');
@@ -93,9 +101,15 @@ export function StudentModal({
   const otherClasses = classes.filter((c) => c.id !== currentClassId);
 
   const toggleSupportTag = (tag: StudentSupportTag) => {
-    setSupportNeeds((prev) =>
-      prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]
-    );
+    setSupportNeeds((prev) => {
+      const next = prev.includes(tag)
+        ? prev.filter((t) => t !== tag)
+        : [...prev, tag];
+      if (next.length === 0) {
+        setExemptFromPenalties(false);
+      }
+      return next;
+    });
   };
 
   const saveAndMaybeContinue = (keepOpen: boolean) => {
@@ -103,15 +117,18 @@ export function StudentModal({
       setError('Inserisci almeno il cognome o il nome dello studente.');
       return;
     }
+    const effectiveExempt = supportNeeds.length > 0 ? exemptFromPenalties : false;
     onSave({
       lastName: lastName.trim(),
       firstName: firstName.trim(),
       supportNeeds,
+      exemptFromPenalties: effectiveExempt,
     });
     if (keepOpen) {
       setLastName('');
       setFirstName('');
       setSupportNeeds([]);
+      setExemptFromPenalties(false);
       setError('');
       window.setTimeout(() => lastNameInputRef.current?.focus(), 0);
     } else {
@@ -134,6 +151,7 @@ export function StudentModal({
       lastName: lastName.trim(),
       firstName: firstName.trim(),
       supportNeeds,
+      exemptFromPenalties: supportNeeds.length > 0 ? exemptFromPenalties : false,
     });
   };
 
@@ -228,6 +246,27 @@ export function StudentModal({
             <p className="text-[11px] text-slate-500">
               Se almeno una casella è selezionata, compare un piccolo asterisco (*) accanto al numero dello studente.
             </p>
+
+            {supportNeeds.length > 0 && (
+              <div className="mt-2.5 rounded-md border border-slate-200 bg-slate-50/90 px-3 py-2.5">
+                <label className="flex cursor-pointer items-start gap-2.5">
+                  <input
+                    type="checkbox"
+                    checked={exemptFromPenalties}
+                    onChange={(e) => setExemptFromPenalties(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300 text-blue-700 focus:ring-blue-600"
+                  />
+                  <span className="min-w-0">
+                    <span className="block text-xs font-semibold text-slate-900">
+                      Escludi dalle penalità della classe
+                    </span>
+                    <span className="mt-0.5 block text-[11px] leading-snug text-slate-600">
+                      Se attiva, le penalità automatiche per stato NO, tavole mancanti e giorni di ritardo non incidono sul voto finale di questo studente.
+                    </span>
+                  </span>
+                </label>
+              </div>
+            )}
           </fieldset>
 
           {student && onRequestMoveToClass && (

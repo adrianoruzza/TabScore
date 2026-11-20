@@ -54,6 +54,7 @@ export interface ArchivedStudentHistory {
   lastName: string;
   firstName: string;
   supportNeeds?: StudentSupportTag[];
+  exemptFromPenalties?: boolean;
   movedAt: string;
   toClassId: string;
   toClassName: string;
@@ -67,6 +68,7 @@ export interface Student {
   firstName: string;
   order: number;
   supportNeeds?: StudentSupportTag[];
+  exemptFromPenalties?: boolean;
   transferHistory?: StudentTransferRecord[];
 }
 
@@ -128,6 +130,7 @@ export interface FolderCalculationBreakdown {
   isConfirmed: boolean;
   confirmedAt: string | null;
   isManualOverride?: boolean;
+  isPenaltyExempt?: boolean;
 }
 
 export interface FolderStudentRecord {

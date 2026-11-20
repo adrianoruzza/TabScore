@@ -71,6 +71,148 @@ export interface PlateImportResult {
   error?: string;
 }
 
+export interface HistoryEntry {
+  state: GradebookStoreState;
+  label: string;
+  timestamp: number;
+  coalesceKey?: string;
+}
+
+export interface StoreHistoryState {
+  past: HistoryEntry[];
+  future: HistoryEntry[];
+}
+
+export const EMPTY_STORE_HISTORY: StoreHistoryState = {
+  past: [],
+  future: [],
+};
+
+export const MAX_UNDO_HISTORY = 50;
+export const UNDO_COALESCE_WINDOW_MS = 1200;
+
+export function pushHistoryEntry(
+  history: StoreHistoryState,
+  prevState: GradebookStoreState,
+  nextState: GradebookStoreState,
+  options?: {
+    label?: string;
+    coalesceKey?: string;
+    nowMs?: number;
+  }
+): StoreHistoryState {
+  const nowMs = options?.nowMs ?? Date.now();
+  const inferredLabel =
+    options?.label ||
+    (nextState.auditLog[0] &&
+    nextState.auditLog[0].id !== prevState.auditLog[0]?.id
+      ? nextState.auditLog[0].action
+      : 'Modifica dati');
+
+  const coalesceKey = options?.coalesceKey;
+  if (coalesceKey && history.past.length > 0) {
+    const top = history.past[history.past.length - 1];
+    if (
+      top.coalesceKey === coalesceKey &&
+      nowMs - top.timestamp <= UNDO_COALESCE_WINDOW_MS
+    ) {
+      const nextPast = [...history.past];
+      nextPast[nextPast.length - 1] = {
+        ...top,
+        label: inferredLabel,
+        timestamp: nowMs,
+      };
+      return {
+        past: nextPast,
+        future: [],
+      };
+    }
+  }
+
+  const nextPast = [
+    ...history.past,
+    {
+      state: prevState,
+      label: inferredLabel,
+      timestamp: nowMs,
+      ...(coalesceKey ? { coalesceKey } : {}),
+    },
+  ];
+  return {
+    past:
+      nextPast.length > MAX_UNDO_HISTORY
+        ? nextPast.slice(nextPast.length - MAX_UNDO_HISTORY)
+        : nextPast,
+    future: [],
+  };
+}
+
+export function applyUndoHistory(
+  currentState: GradebookStoreState,
+  history: StoreHistoryState,
+  nowMs: number = Date.now()
+): {
+  state: GradebookStoreState;
+  history: StoreHistoryState;
+  label: string;
+} | null {
+  if (history.past.length === 0) return null;
+  const entry = history.past[history.past.length - 1];
+  const nextPast = history.past.slice(0, -1);
+  const nextFuture = [
+    ...history.future,
+    {
+      state: currentState,
+      label: entry.label,
+      timestamp: nowMs,
+    },
+  ];
+  return {
+    state: entry.state,
+    history: {
+      past: nextPast,
+      future:
+        nextFuture.length > MAX_UNDO_HISTORY
+          ? nextFuture.slice(nextFuture.length - MAX_UNDO_HISTORY)
+          : nextFuture,
+    },
+    label: entry.label,
+  };
+}
+
+export function applyRedoHistory(
+  currentState: GradebookStoreState,
+  history: StoreHistoryState,
+  nowMs: number = Date.now()
+): {
+  state: GradebookStoreState;
+  history: StoreHistoryState;
+  label: string;
+} | null {
+  if (history.future.length === 0) return null;
+  const entry = history.future[history.future.length - 1];
+  const nextFuture = history.future.slice(0, -1);
+  const nextPast = [
+    ...history.past,
+    {
+      state: currentState,
+      label: entry.label,
+      timestamp: nowMs,
+    },
+  ];
+  return {
+    state: entry.state,
+    history: {
+      past:
+        nextPast.length > MAX_UNDO_HISTORY
+          ? nextPast.slice(nextPast.length - MAX_UNDO_HISTORY)
+          : nextPast,
+      future: nextFuture,
+    },
+    label: entry.label,
+  };
+}
+
 function normalizePlateTitleKey(title: string): string {
   return title.trim().toLowerCase().replace(/\s+/g, ' ');
 }
@@ -696,17 +838,27 @@ export function useGradebookStore() {
     state: GradebookStoreState;
     mutationSeq: number;
     mutationSource: StoreMutationSource;
+    history: StoreHistoryState;
   }>(() => ({
     state: loadStoreState(),
     mutationSeq: 0,
     mutationSource: 'init',
+    history: EMPTY_STORE_HISTORY,
   }));
   const state = storeRecord.state;
   const stateRef = useRef(state);
   stateRef.current = state;
 
   const commit = useCallback(
-    (updater: (prev: GradebookStoreState) => GradebookStoreState) => {
+    (
+      updater: (prev: GradebookStoreState) => GradebookStoreState,
+      options?: {
+        recordHistory?: boolean;
+        label?: string;
+        coalesceKey?: string;
+      }
+    ) => {
+      const recordHistory = options?.recordHistory !== false;
       setStoreRecord((prev) => {
         const rawNext = updater(prev.state);
         if (rawNext === prev.state) return prev;
@@ -716,15 +868,61 @@ export function useGradebookStore() {
             : rawNext;
         saveStoreState(next);
         stateRef.current = next;
+        const nextHistory = recordHistory
+          ? pushHistoryEntry(prev.history, prev.state, next, {
+              label: options?.label,
+              coalesceKey: options?.coalesceKey,
+            })
+          : prev.history;
         return {
           state: next,
           mutationSeq: prev.mutationSeq + 1,
           mutationSource: 'user',
+          history: nextHistory,
         };
       });
     },
     []
   );
+
+  const undo = useCallback(() => {
+    setStoreRecord((prev) => {
+      const result = applyUndoHistory(prev.state, prev.history);
+      if (!result) return prev;
+      saveStoreState(result.state);
+      stateRef.current = result.state;
+      return {
+        state: result.state,
+        mutationSeq: prev.mutationSeq + 1,
+        mutationSource: 'user',
+        history: result.history,
+      };
+    });
+  }, []);
+
+  const redo = useCallback(() => {
+    setStoreRecord((prev) => {
+      const result = applyRedoHistory(prev.state, prev.history);
+      if (!result) return prev;
+      saveStoreState(result.state);
+      stateRef.current = result.state;
+      return {
+        state: result.state,
+        mutationSeq: prev.mutationSeq + 1,
+        mutationSource: 'user',
+        history: result.history,
+      };
+    });
+  }, []);
+
+  const canUndo = storeRecord.history.past.length > 0;
+  const canRedo = storeRecord.history.future.length > 0;
+  const undoLabel = canUndo
+    ? storeRecord.history.past[storeRecord.history.past.length - 1].label
+    : null;
+  const redoLabel = canRedo
+    ? storeRecord.history.future[storeRecord.history.future.length - 1].label
+    : null;
 
   const activeClass = useMemo(
     () =>
@@ -737,13 +935,16 @@ export function useGradebookStore() {
   // --- CLASS OPERATIONS ---
   const setActiveClass = useCallback(
     (classId: string) => {
-      commit((prev) => {
-        if (prev.activeClassId === classId) return prev;
-        return {
-          ...prev,
-          activeClassId: classId,
-        };
-      });
+      commit(
+        (prev) => {
+          if (prev.activeClassId === classId) return prev;
+          return {
+            ...prev,
+            activeClassId: classId,
+          };
+        },
+        { recordHistory: false }
+      );
     },
     [commit]
   );
@@ -846,11 +1047,14 @@ export function useGradebookStore() {
         lastName: string;
         firstName: string;
         supportNeeds?: StudentSupportTag[];
+        exemptFromPenalties?: boolean;
       }
     ) => {
       const normalizedTags: StudentSupportTag[] = (['DSA', 'BES', 'H'] as const).filter(
         (tag) => input.supportNeeds?.includes(tag)
       );
+      const effectiveExempt =
+        normalizedTags.length > 0 && Boolean(input.exemptFromPenalties);
       commit((prev) => {
         const target = prev.classes.find((c) => c.id === classId);
         if (!target) return prev;
@@ -858,12 +1062,13 @@ export function useGradebookStore() {
           (max, s) => Math.max(max, s.order),
           -1
         );
-        const student = {
+        const student: Student = {
           id: createId('stu'),
           lastName: input.lastName.trim(),
           firstName: input.firstName.trim(),
           order: maxOrder + 1,
           ...(normalizedTags.length > 0 ? { supportNeeds: normalizedTags } : {}),
+          ...(effectiveExempt ? { exemptFromPenalties: true } : {}),
         };
         return {
           ...prev,
@@ -884,7 +1089,9 @@ export function useGradebookStore() {
               'Inserimento studente',
               `Aggiunto studente: ${student.lastName} ${student.firstName}${
                 normalizedTags.length > 0
-                  ? ` (${normalizedTags.join(', ')})`
+                  ? ` (${normalizedTags.join(', ')}${
+                      effectiveExempt ? ', esente penalità' : ''
+                    })`
                   : ''
               }.`
             ),
@@ -982,11 +1189,14 @@ export function useGradebookStore() {
         lastName: string;
         firstName: string;
         supportNeeds?: StudentSupportTag[];
+        exemptFromPenalties?: boolean;
       }
     ) => {
       const normalizedTags: StudentSupportTag[] = (['DSA', 'BES', 'H'] as const).filter(
         (tag) => input.supportNeeds?.includes(tag)
       );
+      const effectiveExempt =
+        normalizedTags.length > 0 && Boolean(input.exemptFromPenalties);
       commit((prev) => {
         const target = prev.classes.find((c) => c.id === classId);
         const stu = target?.students.find((s) => s.id === studentId);
@@ -1001,7 +1211,7 @@ export function useGradebookStore() {
                   ...c,
                   students: c.students.map((s) => {
                     if (s.id !== studentId) return s;
-                    const updated = {
+                    const updated: Student = {
                       ...s,
                       lastName: nextLast,
                       firstName: nextFirst,
@@ -1010,6 +1220,11 @@ export function useGradebookStore() {
                       updated.supportNeeds = normalizedTags;
                     } else {
                       delete updated.supportNeeds;
+                    }
+                    if (effectiveExempt) {
+                      updated.exemptFromPenalties = true;
+                    } else {
+                      delete updated.exemptFromPenalties;
                     }
                     return updated;
                   }),
@@ -1025,7 +1240,9 @@ export function useGradebookStore() {
               'Modifica studente',
               `Aggiornato "${stu.lastName} ${stu.firstName}" → "${nextLast} ${nextFirst}"${
                 normalizedTags.length > 0
-                  ? ` (${normalizedTags.join(', ')})`
+                  ? ` (${normalizedTags.join(', ')}${
+                      effectiveExempt ? ', esente penalità' : ''
+                    })`
                   : ''
               }.`
             ),
@@ -1137,6 +1354,7 @@ export function useGradebookStore() {
         lastName: string;
         firstName: string;
         supportNeeds?: StudentSupportTag[];
+        exemptFromPenalties?: boolean;
       }
     ) => {
       if (sourceClassId === targetClassId) return;
@@ -1158,6 +1376,11 @@ export function useGradebookStore() {
         const normalizedTags: StudentSupportTag[] = (
           ['DSA', 'BES', 'H'] as const
         ).filter((tag) => rawTags?.includes(tag));
+        const rawExempt =
+          latestIdentity && latestIdentity.exemptFromPenalties !== undefined
+            ? latestIdentity.exemptFromPenalties
+            : stu.exemptFromPenalties;
+        const effectiveExempt = normalizedTags.length > 0 && Boolean(rawExempt);
 
         const now = new Date().toISOString();
         const sourceEvaluations = sourceClass.evaluations[studentId] ?? {};
@@ -1216,6 +1439,7 @@ export function useGradebookStore() {
           lastName: nextLast,
           firstName: nextFirst,
           ...(normalizedTags.length > 0 ? { supportNeeds: normalizedTags } : {}),
+          ...(effectiveExempt ? { exemptFromPenalties: true } : {}),
           movedAt: now,
           toClassId: targetClass.id,
           toClassName: targetClass.name,
@@ -1243,6 +1467,7 @@ export function useGradebookStore() {
           firstName: nextFirst,
           order: targetMaxOrder + 1,
           ...(normalizedTags.length > 0 ? { supportNeeds: normalizedTags } : {}),
+          ...(effectiveExempt ? { exemptFromPenalties: true } : {}),
           transferHistory: [...(stu.transferHistory ?? []), transferRecord],
         };
 
@@ -1542,6 +1767,9 @@ export function useGradebookStore() {
         state: nextState,
         mutationSeq: prev.mutationSeq + 1,
         mutationSource: 'user',
+        history: pushHistoryEntry(prev.history, prev.state, nextState, {
+          label: actionLabel,
+        }),
       }));
       return true;
     },
@@ -1580,6 +1808,7 @@ export function useGradebookStore() {
         state: nextState,
         mutationSeq: prev.mutationSeq + 1,
         mutationSource: 'user',
+        history: pushHistoryEntry(prev.history, prev.state, nextState),
       }));
       return result;
     },
@@ -1618,6 +1847,7 @@ export function useGradebookStore() {
         state: nextState,
         mutationSeq: prev.mutationSeq + 1,
         mutationSource: 'user',
+        history: pushHistoryEntry(prev.history, prev.state, nextState),
       }));
       return result;
     },
@@ -1901,90 +2131,100 @@ export function useGradebookStore() {
         extraMissingPlateIds?: string[];
       }
     ) => {
-      commit((prev) => {
-        const target = prev.classes.find((c) => c.id === classId);
-        const stu = target?.students.find((s) => s.id === studentId);
-        const folder = target?.folders.find((f) => f.id === folderId);
-        if (!target || !stu || !folder) return prev;
+      const patchKeys = Object.keys(patch).filter(
+        (k) => patch[k as keyof typeof patch] !== undefined
+      );
+      const isNotesOnlyPatch =
+        patchKeys.length === 1 && patchKeys[0] === 'notes';
+      commit(
+        (prev) => {
+          const target = prev.classes.find((c) => c.id === classId);
+          const stu = target?.students.find((s) => s.id === studentId);
+          const folder = target?.folders.find((f) => f.id === folderId);
+          if (!target || !stu || !folder) return prev;
 
-        const prevRec =
-          target.folderRecords[studentId]?.[folderId] ?? EMPTY_FOLDER_RECORD;
-        if (prevRec.confirmedSnapshot) {
-          // Confirmed evaluations are locked until explicitly reopened
-          return prev;
-        }
-
-        const sanitizedPatch = { ...patch };
-        if (sanitizedPatch.manualDelayDays !== undefined) {
-          sanitizedPatch.manualDelayDays = Math.min(
-            10,
-            Math.max(0, Math.floor(sanitizedPatch.manualDelayDays || 0))
-          );
-          if (
-            sanitizedPatch.status === undefined &&
-            sanitizedPatch.manualDelayDays > 0 &&
-            prevRec.status === 'da_consegnare'
-          ) {
-            sanitizedPatch.status = 'consegnata_ritardo';
+          const prevRec =
+            target.folderRecords[studentId]?.[folderId] ?? EMPTY_FOLDER_RECORD;
+          if (prevRec.confirmedSnapshot) {
+            // Confirmed evaluations are locked until explicitly reopened
+            return prev;
           }
-        }
-        if (
-          sanitizedPatch.manualFinalGrade !== undefined &&
-          sanitizedPatch.manualGradeOverridden === undefined
-        ) {
-          sanitizedPatch.manualGradeOverridden =
-            sanitizedPatch.manualFinalGrade !== null;
-        }
 
-        const nextRec = {
-          ...prevRec,
-          ...sanitizedPatch,
-        };
+          const sanitizedPatch = { ...patch };
+          if (sanitizedPatch.manualDelayDays !== undefined) {
+            sanitizedPatch.manualDelayDays = Math.min(
+              10,
+              Math.max(0, Math.floor(sanitizedPatch.manualDelayDays || 0))
+            );
+            if (
+              sanitizedPatch.status === undefined &&
+              sanitizedPatch.manualDelayDays > 0 &&
+              prevRec.status === 'da_consegnare'
+            ) {
+              sanitizedPatch.status = 'consegnata_ritardo';
+            }
+          }
+          if (
+            sanitizedPatch.manualFinalGrade !== undefined &&
+            sanitizedPatch.manualGradeOverridden === undefined
+          ) {
+            sanitizedPatch.manualGradeOverridden =
+              sanitizedPatch.manualFinalGrade !== null;
+          }
 
-        const detailsParts = [
-          `Stato: ${nextRec.status}`,
-          `Data: ${nextRec.actualDeliveryDate || '—'}`,
-          `Ritardo: ${nextRec.manualDelayDays ?? 0} gg`,
-        ];
-        if (
-          nextRec.manualGradeOverridden &&
-          nextRec.manualFinalGrade !== undefined &&
-          nextRec.manualFinalGrade !== null
-        ) {
-          detailsParts.push(
-            `Voto manuale: ${formatGradeLabel(nextRec.manualFinalGrade)}`
-          );
-        }
+          const nextRec = {
+            ...prevRec,
+            ...sanitizedPatch,
+          };
 
-        return {
-          ...prev,
-          classes: prev.classes.map((c) =>
-            c.id === classId
-              ? {
-                  ...c,
-                  folderRecords: {
-                    ...c.folderRecords,
-                    [studentId]: {
-                      ...(c.folderRecords[studentId] ?? {}),
-                      [folderId]: nextRec,
+          const detailsParts = [
+            `Stato: ${nextRec.status}`,
+            `Data: ${nextRec.actualDeliveryDate || '—'}`,
+            `Ritardo: ${nextRec.manualDelayDays ?? 0} gg`,
+          ];
+          if (
+            nextRec.manualGradeOverridden &&
+            nextRec.manualFinalGrade !== undefined &&
+            nextRec.manualFinalGrade !== null
+          ) {
+            detailsParts.push(
+              `Voto manuale: ${formatGradeLabel(nextRec.manualFinalGrade)}`
+            );
+          }
+
+          return {
+            ...prev,
+            classes: prev.classes.map((c) =>
+              c.id === classId
+                ? {
+                    ...c,
+                    folderRecords: {
+                      ...c.folderRecords,
+                      [studentId]: {
+                        ...(c.folderRecords[studentId] ?? {}),
+                        [folderId]: nextRec,
+                      },
                     },
-                  },
-                  updatedAt: new Date().toISOString(),
-                }
-              : c
-          ),
-          auditLog: [
-            makeLog(
-              classId,
-              target.name,
-              'cartellina',
-              `Aggiornamento ${folder.title} (${stu.lastName} ${stu.firstName})`,
-              `${detailsParts.join(' · ')}.`
+                    updatedAt: new Date().toISOString(),
+                  }
+                : c
             ),
-            ...prev.auditLog,
-          ],
-        };
-      });
+            auditLog: [
+              makeLog(
+                classId,
+                target.name,
+                'cartellina',
+                `Aggiornamento ${folder.title} (${stu.lastName} ${stu.firstName})`,
+                `${detailsParts.join(' · ')}.`
+              ),
+              ...prev.auditLog,
+            ],
+          };
+        },
+        isNotesOnlyPatch
+          ? { coalesceKey: `folder-notes:${classId}:${studentId}:${folderId}` }
+          : undefined
+      );
     },
     [commit]
   );
@@ -2370,6 +2610,11 @@ export function useGradebookStore() {
         state: nextState,
         mutationSeq: isCloudRestore ? prev.mutationSeq : prev.mutationSeq + 1,
         mutationSource: isCloudRestore ? 'cloud_restore' : 'user',
+        history: isCloudRestore
+          ? EMPTY_STORE_HISTORY
+          : pushHistoryEntry(prev.history, prev.state, nextState, {
+              label: `Ripristino da ${sourceLabel}`,
+            }),
       }));
       return nextState;
     },
@@ -2384,13 +2629,16 @@ export function useGradebookStore() {
       action: string,
       details: string
     ) => {
-      commit((prev) => ({
-        ...prev,
-        auditLog: [
-          makeLog(classId, className, category, action, details),
-          ...prev.auditLog,
-        ],
-      }));
+      commit(
+        (prev) => ({
+          ...prev,
+          auditLog: [
+            makeLog(classId, className, category, action, details),
+            ...prev.auditLog,
+          ],
+        }),
+        { recordHistory: false }
+      );
     },
     [commit]
   );
@@ -2400,6 +2648,12 @@ export function useGradebookStore() {
     mutationSeq: storeRecord.mutationSeq,
     mutationSource: storeRecord.mutationSource,
     activeClass,
+    undo,
+    redo,
+    canUndo,
+    canRedo,
+    undoLabel,
+    redoLabel,
     setActiveClass,
     createClass,
     updateClass,

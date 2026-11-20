@@ -100,6 +100,11 @@ export function FolderDrawer({
                   {supportTags.join(' · ')}
                 </span>
               )}
+              {breakdown.isPenaltyExempt && (
+                <span className="rounded border border-emerald-300 bg-emerald-50 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-900">
+                  Esente penalità
+                </span>
+              )}
             </div>
             <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-slate-600">
               <span className="font-semibold text-blue-900">{folder.title}</span>
@@ -214,7 +219,9 @@ export function FolderDrawer({
                 )}
               </div>
               <div className="mt-0.5 text-[11px] text-slate-600">
-                Dopo applicazione penalità
+                {breakdown.isPenaltyExempt
+                  ? 'Esente dalle penalità della classe'
+                  : 'Dopo applicazione penalità'}
               </div>
             </div>
           </section>
@@ -227,6 +234,12 @@ export function FolderDrawer({
               </h3>
               <span className="text-[11px] text-slate-500">Scala 2–10</span>
             </div>
+
+            {breakdown.isPenaltyExempt && (
+              <div className="rounded-md border border-emerald-200 bg-emerald-50/80 px-3 py-2 text-xs text-emerald-900">
+                Studente escluso dalle penalità della classe: gli stati NO, le tavole mancanti e i giorni di ritardo restano registrati ma non riducono il voto finale.
+              </div>
+            )}
 
             <div className="divide-y divide-slate-200/80 rounded-md border border-slate-200 bg-slate-50/50">
               <div className="flex items-center justify-between gap-3 px-3.5 py-2">
@@ -251,10 +264,16 @@ export function FolderDrawer({
                     Penalità stato NO
                   </span>
                   <span className="ml-2 font-mono text-xs text-slate-500">
-                    {breakdown.noCount} × {formatDecimalIt(settings.penaltyNo, 2)}
+                    {breakdown.isPenaltyExempt
+                      ? `${breakdown.noCount} reg. (esente)`
+                      : `${breakdown.noCount} × ${formatDecimalIt(settings.penaltyNo, 2)}`}
                   </span>
                 </div>
-                <span className="font-sans text-[15px] font-semibold tabular-nums text-rose-700">
+                <span
+                  className={`font-sans text-[15px] font-semibold tabular-nums ${
+                    breakdown.isPenaltyExempt ? 'text-slate-500' : 'text-rose-700'
+                  }`}
+                >
                   {breakdown.penaltyNoTotal > 0
                     ? `-${formatDecimalIt(breakdown.penaltyNoTotal, 2)}`
                     : '0,00'}
@@ -267,10 +286,16 @@ export function FolderDrawer({
                     Penalità tavole mancanti
                   </span>
                   <span className="ml-2 font-mono text-xs text-slate-500">
-                    {breakdown.missingCount} × {formatDecimalIt(settings.penaltyMissing, 2)}
+                    {breakdown.isPenaltyExempt
+                      ? `${breakdown.missingCount} reg. (esente)`
+                      : `${breakdown.missingCount} × ${formatDecimalIt(settings.penaltyMissing, 2)}`}
                   </span>
                 </div>
-                <span className="font-sans text-[15px] font-semibold tabular-nums text-rose-700">
+                <span
+                  className={`font-sans text-[15px] font-semibold tabular-nums ${
+                    breakdown.isPenaltyExempt ? 'text-slate-500' : 'text-rose-700'
+                  }`}
+                >
                   {breakdown.penaltyMissingTotal > 0
                     ? `-${formatDecimalIt(breakdown.penaltyMissingTotal, 2)}`
                     : '0,00'}
@@ -283,12 +308,18 @@ export function FolderDrawer({
                     Penalità ritardo cartellina
                   </span>
                   <span className="ml-2 font-mono text-xs text-slate-500">
-                    {settings.toleranceDays > 0 && breakdown.rawDelayDays > 0
+                    {breakdown.isPenaltyExempt
+                      ? `${breakdown.rawDelayDays}g reg. (esente)`
+                      : settings.toleranceDays > 0 && breakdown.rawDelayDays > 0
                       ? `(${breakdown.rawDelayDays}g − ${settings.toleranceDays}g) = ${breakdown.chargeableDelayDays}g × ${formatDecimalIt(settings.penaltyLatePerDay, 2)}`
                       : `${breakdown.chargeableDelayDays}g × ${formatDecimalIt(settings.penaltyLatePerDay, 2)}`}
                   </span>
                 </div>
-                <span className="font-sans text-[15px] font-semibold tabular-nums text-rose-700">
+                <span
+                  className={`font-sans text-[15px] font-semibold tabular-nums ${
+                    breakdown.isPenaltyExempt ? 'text-slate-500' : 'text-rose-700'
+                  }`}
+                >
                   {breakdown.penaltyDelayTotal > 0
                     ? `-${formatDecimalIt(breakdown.penaltyDelayTotal, 2)}`
                     : '0,00'}
@@ -298,7 +329,9 @@ export function FolderDrawer({
               <div className="flex items-center justify-between gap-3 bg-blue-50/70 px-3.5 py-2.5">
                 <div className="min-w-0">
                   <div className="text-sm font-bold text-blue-950">
-                    Voto finale (dopo le penalità)
+                    {breakdown.isPenaltyExempt
+                      ? 'Voto finale (esente penalità)'
+                      : 'Voto finale (dopo le penalità)'}
                   </div>
                   <div className="text-xs text-slate-600">
                     {breakdown.rawFinalGrade !== null

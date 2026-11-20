@@ -260,8 +260,19 @@ export function normalizeClassData(cls: ClassData, fallbackIndex = 0): ClassData
     typeof cls.order === 'number' && Number.isFinite(cls.order)
       ? cls.order
       : undefined;
+  const normalizedStudents = Array.isArray(cls.students)
+    ? cls.students.map((stu) => {
+        const hasNeeds = Boolean(stu.supportNeeds && stu.supportNeeds.length > 0);
+        if (!hasNeeds && stu.exemptFromPenalties) {
+          const { exemptFromPenalties: _removed, ...rest } = stu;
+          return rest;
+        }
+        return stu;
+      })
+    : [];
   return {
     ...cls,
+    students: normalizedStudents,
     ...(normalizedOrder !== undefined ? { order: normalizedOrder } : {}),
     color: getClassColorOption(cls.color, fallbackIndex).id,
     settings: {

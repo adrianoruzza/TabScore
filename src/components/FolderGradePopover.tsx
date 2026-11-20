@@ -1,5 +1,6 @@
 import { Lock, X } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { RapidGradePicker } from './RapidGradePicker';
 
 interface FolderGradePopoverProps {
@@ -73,7 +74,7 @@ export function FolderGradePopover({
     };
   }, [onClose]);
 
-  return (
+  const popoverNode = (
     <div
       ref={popoverRef}
       style={{ top: pos.top, left: pos.left }}
@@ -157,4 +158,7 @@ export function FolderGradePopover({
       )}
     </div>
   );
+
+  if (typeof document === 'undefined') return popoverNode;
+  return createPortal(popoverNode, document.body);
 }

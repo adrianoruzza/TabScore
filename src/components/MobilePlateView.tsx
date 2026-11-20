@@ -14,6 +14,7 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
+import { createPortal } from 'react-dom';
 import type {
   ClassData,
   FolderDelivery,
@@ -504,20 +505,26 @@ export function MobilePlateView({
                         ? formatDecimalIt(calc.initialAverage, 2)
                         : '—'}
                     </strong>
-                    {calc.penaltyNoTotal +
-                      calc.penaltyMissingTotal +
-                      calc.penaltyDelayTotal >
-                      0 && (
-                      <span className="ml-1 font-sans font-semibold tabular-nums text-rose-700">
-                        (-
-                        {formatDecimalIt(
-                          calc.penaltyNoTotal +
-                            calc.penaltyMissingTotal +
-                            calc.penaltyDelayTotal,
-                          2
-                        )}
-                        )
+                    {calc.isPenaltyExempt ? (
+                      <span className="ml-1 font-sans font-semibold text-emerald-700">
+                        (esente penalità)
                       </span>
+                    ) : (
+                      calc.penaltyNoTotal +
+                        calc.penaltyMissingTotal +
+                        calc.penaltyDelayTotal >
+                        0 && (
+                        <span className="ml-1 font-sans font-semibold tabular-nums text-rose-700">
+                          (-
+                          {formatDecimalIt(
+                            calc.penaltyNoTotal +
+                              calc.penaltyMissingTotal +
+                              calc.penaltyDelayTotal,
+                            2
+                          )}
+                          )
+                        </span>
+                      )
                     )}
                   </div>
                 </div>
@@ -564,47 +571,51 @@ export function MobilePlateView({
       </div>
 
       {/* Mobile RapidGradePicker Sheet */}
-      {mobileGradeTarget && activePlate && (
-        <div
-          className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/40 p-3 sm:items-center"
-          role="dialog"
-          aria-modal="true"
-          aria-label={`Assegna voto a ${mobileGradeTarget.studentName}`}
-        >
-          <div className="w-full max-w-xs rounded-lg border border-slate-300 bg-white p-3.5 shadow-2xl">
-            <div className="mb-2.5 flex items-start justify-between gap-2 border-b border-slate-200 pb-2">
-              <div className="min-w-0">
-                <div className="truncate text-xs font-semibold text-slate-900">
-                  {mobileGradeTarget.studentName}
+      {mobileGradeTarget &&
+        activePlate &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/40 p-3 sm:items-center"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Assegna voto a ${mobileGradeTarget.studentName}`}
+          >
+            <div className="w-full max-w-xs rounded-lg border border-slate-300 bg-white p-3.5 shadow-2xl">
+              <div className="mb-2.5 flex items-start justify-between gap-2 border-b border-slate-200 pb-2">
+                <div className="min-w-0">
+                  <div className="truncate text-xs font-semibold text-slate-900">
+                    {mobileGradeTarget.studentName}
+                  </div>
+                  <div className="truncate text-[11px] text-slate-500">
+                    Tav. {activePlate.number} — {activePlate.title}
+                  </div>
                 </div>
-                <div className="truncate text-[11px] text-slate-500">
-                  Tav. {activePlate.number} — {activePlate.title}
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setMobileGradeTarget(null)}
+                  className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                  aria-label="Chiudi"
+                >
+                  <X className="h-4 w-4" />
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => setMobileGradeTarget(null)}
-                className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-                aria-label="Chiudi"
-              >
-                <X className="h-4 w-4" />
-              </button>
+              <RapidGradePicker
+                currentGrade={mobileGradeTarget.currentGrade}
+                onSelect={(grade) => {
+                  onUpdateCell(
+                    mobileGradeTarget.studentId,
+                    mobileGradeTarget.plateId,
+                    { grade }
+                  );
+                  setMobileGradeTarget(null);
+                }}
+                onCancel={() => setMobileGradeTarget(null)}
+              />
             </div>
-            <RapidGradePicker
-              currentGrade={mobileGradeTarget.currentGrade}
-              onSelect={(grade) => {
-                onUpdateCell(
-                  mobileGradeTarget.studentId,
-                  mobileGradeTarget.plateId,
-                  { grade }
-                );
-                setMobileGradeTarget(null);
-              }}
-              onCancel={() => setMobileGradeTarget(null)}
-            />
-          </div>
-        </div>
-      )}
+          </div>,
+          document.body
+        )}
 
       <PlateImageViewerModal
         plate={viewerOpen ? activePlate : null}

@@ -1,5 +1,6 @@
 import { X } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { PlateEvaluation, PlateStatus } from '../types/gradebook';
 import { STATUS_META } from '../utils/calculations';
 import { RapidGradePicker } from './RapidGradePicker';
@@ -100,7 +101,7 @@ export function CellPopover({
     };
   }, [activeMode, onChange, onClose]);
 
-  return (
+  const popoverNode = (
     <div
       ref={popoverRef}
       style={{ top: pos.top, left: pos.left }}
@@ -271,4 +272,7 @@ export function CellPopover({
       )}
     </div>
   );
+
+  if (typeof document === 'undefined') return popoverNode;
+  return createPortal(popoverNode, document.body);
 }

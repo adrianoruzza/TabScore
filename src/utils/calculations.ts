@@ -246,16 +246,27 @@ export function computeLiveFolderEvaluation(
     };
   });
 
-  const initialAverage = gradedCount > 0 ? gradeSum / gradedCount : null;
+  const student = classData.students.find((s) => s.id === studentId);
+  const isPenaltyExempt = Boolean(
+    student?.exemptFromPenalties &&
+      student.supportNeeds &&
+      student.supportNeeds.length > 0
+  );
 
-  const penaltyNoTotal = round2(noCount * settings.penaltyNo);
-  const penaltyMissingTotal = round2(missingCount * settings.penaltyMissing);
+  const initialAverage = gradedCount > 0 ? gradeSum / gradedCount : null;
 
   // Manual delay days entered by teacher (0-10), minus optional tolerance days from class settings
   const rawDelayDays = Math.max(0, Math.floor(record.manualDelayDays ?? 0));
   const safeTolerance = Math.max(0, Math.floor(settings.toleranceDays || 0));
   const chargeableDelayDays = Math.max(0, rawDelayDays - safeTolerance);
-  const penaltyDelayTotal = round2(chargeableDelayDays * settings.penaltyLatePerDay);
+
+  const penaltyNoTotal = isPenaltyExempt ? 0 : round2(noCount * settings.penaltyNo);
+  const penaltyMissingTotal = isPenaltyExempt
+    ? 0
+    : round2(missingCount * settings.penaltyMissing);
+  const penaltyDelayTotal = isPenaltyExempt
+    ? 0
+    : round2(chargeableDelayDays * settings.penaltyLatePerDay);
 
   let rawFinalGrade: number | null = null;
   let clampedGrade: number | null = null;
@@ -298,6 +309,7 @@ export function computeLiveFolderEvaluation(
     isConfirmed: false,
     confirmedAt: null,
     isManualOverride: hasManualOverride,
+    isPenaltyExempt,
   };
 }
 

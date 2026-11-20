@@ -1,5 +1,6 @@
 import { Lock, X } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { FolderDeliveryStatus } from '../types/gradebook';
 import { FOLDER_STATUS_META, formatShortMonthDateIt } from '../utils/calculations';
 
@@ -80,7 +81,7 @@ export function FolderDatePopover({
     };
   }, [onClose]);
 
-  return (
+  const popoverNode = (
     <div
       ref={popoverRef}
       style={{ top: pos.top, left: pos.left }}
@@ -238,4 +239,7 @@ export function FolderDatePopover({
       </div>
     </div>
   );
+
+  if (typeof document === 'undefined') return popoverNode;
+  return createPortal(popoverNode, document.body);
 }

@@ -17,10 +17,13 @@ import {
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
 } from 'react';
+import { createPortal } from 'react-dom';
 import type { Plate } from '../types/gradebook';
 import {
+  cancelCanvasPdfRender,
   disposePdfDocument,
   isPdfDataUrl,
+  isPdfRenderCancelledError,
   loadPdfDocumentFromDataUrl,
   renderPdfPageToCanvas,
   type PdfDocumentProxy,
@@ -46,16 +49,17 @@ export function PlateImageViewerModal({
   const stageRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const pdfCanvasRef = useRef<HTMLCanvasElement>(null);
-  const pdfDocRef = useRef<PdfDocumentProxy | null>(null);
 
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
 
+  const [pdfDoc, setPdfDoc] = useState<PdfDocumentProxy | null>(null);
   const [pdfNumPages, setPdfNumPages] = useState(0);
   const [pdfPage, setPdfPage] = useState(1);
   const [pdfLoading, setPdfLoading] = useState(false);
   const [pdfError, setPdfError] = useState('');
+  const [imgError, setImgError] = useState(false);
 
   const isPdf = isPdfDataUrl(plate?.imageDataUrl);
 
@@ -132,20 +136,26 @@ export function PlateImageViewerModal({
     setIsDragging(false);
     setPdfPage(1);
     setPdfNumPages(0);
+    setPdfDoc(null);
     setPdfError('');
+    setImgError(false);
   }, [plate?.id, plate?.imageDataUrl, resetView]);
 
-  // Load PDF document when inspecting a PDF plate
+  // Effect 1: Load PDF document ONLY (never directly renders to canvas)
   useEffect(() => {
     const dataUrl = plate?.imageDataUrl;
     if (!dataUrl || !isPdfDataUrl(dataUrl)) {
-      pdfDocRef.current = null;
+      setPdfDoc(null);
+      setPdfNumPages(0);
+      setPdfLoading(false);
       return;
     }
 
     let cancelled = false;
+    let loadedDoc: PdfDocumentProxy | null = null;
     setPdfLoading(true);
     setPdfError('');
+    setPdfDoc(null);
 
     void (async () => {
       try {
@@ -154,51 +164,42 @@ export function PlateImageViewerModal({
           await disposePdfDocument(doc);
           return;
         }
-        pdfDocRef.current = doc;
+        loadedDoc = doc;
         setPdfNumPages(doc.numPages);
         setPdfPage(1);
-        const stage = stageRef.current;
-        const canvas = pdfCanvasRef.current;
-        if (canvas) {
-          const targetW = Math.min(
-            1100,
-            Math.max(320, (stage?.clientWidth ?? 900) - 48)
-          );
-          await renderPdfPageToCanvas(doc, 1, canvas, targetW, 2.5);
-        }
+        setPdfDoc(doc);
       } catch (err) {
         if (!cancelled) {
+          setPdfLoading(false);
           setPdfError(
             err instanceof Error
               ? err.message
               : 'Impossibile aprire il documento PDF.'
           );
         }
-      } finally {
-        if (!cancelled) {
-          setPdfLoading(false);
-        }
       }
     })();
 
     return () => {
       cancelled = true;
-      const doc = pdfDocRef.current;
-      pdfDocRef.current = null;
-      if (doc) {
-        void disposePdfDocument(doc);
+      cancelCanvasPdfRender(pdfCanvasRef.current);
+      if (loadedDoc) {
+        const docToDispose = loadedDoc;
+        loadedDoc = null;
+        void disposePdfDocument(docToDispose);
       }
     };
   }, [plate?.id, plate?.imageDataUrl]);
 
-  // Re-render current page on page turn
+  // Effect 2: SOLE canvas renderer for loaded PDF document & page changes
   useEffect(() => {
-    const doc = pdfDocRef.current;
     const canvas = pdfCanvasRef.current;
-    if (!isPdf || !doc || !canvas || pdfNumPages === 0) return;
+    if (!isPdf || !pdfDoc || !canvas) return;
 
     let cancelled = false;
     setPdfLoading(true);
+    setPdfError('');
+
     void (async () => {
       try {
         const stage = stageRef.current;
@@ -206,9 +207,16 @@ export function PlateImageViewerModal({
           1100,
           Math.max(320, (stage?.clientWidth ?? 900) - 48)
         );
-        await renderPdfPageToCanvas(doc, pdfPage, canvas, targetW, 2.5);
+        await renderPdfPageToCanvas(
+          pdfDoc,
+          pdfPage,
+          canvas,
+          targetW,
+          2.5,
+          () => cancelled
+        );
       } catch (err) {
-        if (!cancelled) {
+        if (!cancelled && !isPdfRenderCancelledError(err)) {
           setPdfError(
             err instanceof Error
               ? err.message
@@ -224,8 +232,9 @@ export function PlateImageViewerModal({
 
     return () => {
       cancelled = true;
+      cancelCanvasPdfRender(canvas);
     };
-  }, [isPdf, pdfPage, pdfNumPages]);
+  }, [isPdf, pdfDoc, pdfPage]);
 
   useEffect(() => {
     if (!plate?.imageDataUrl) return;
@@ -259,6 +268,7 @@ export function PlateImageViewerModal({
 
   const handleWheel = (e: ReactWheelEvent<HTMLDivElement>) => {
     e.preventDefault();
+    e.stopPropagation();
     const factor = e.deltaY < 0 ? 1.16 : 1 / 1.16;
     applyZoom(zoomRef.current * factor);
   };
@@ -359,8 +369,9 @@ export function PlateImageViewerModal({
 
   const zoomPercent = Math.round(zoom * 100);
 
-  return (
+  const modalNode = (
     <div
+      data-independent-zoom="true"
       className="fixed inset-0 z-[70] flex flex-col bg-slate-950/92 backdrop-blur-[2px]"
       role="dialog"
       aria-modal="true"
@@ -506,12 +517,17 @@ export function PlateImageViewerModal({
               className="max-h-full max-w-full rounded bg-white object-contain shadow-2xl will-change-transform"
             />
           )
+        ) : imgError ? (
+          <div className="max-w-md rounded-lg border border-rose-300 bg-white px-5 py-4 text-center text-sm font-medium text-rose-700 shadow-xl">
+            Impossibile visualizzare l&apos;immagine allegata. Prova a sostituire il file dall&apos;anteprima della tavola.
+          </div>
         ) : (
           <img
             ref={imgRef}
             src={plate.imageDataUrl}
             alt={`Tavola ${plate.number} - ${plate.title}`}
             draggable={false}
+            onError={() => setImgError(true)}
             style={{
               transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})`,
               transition: isDragging ? 'none' : 'transform 120ms ease-out',
@@ -520,7 +536,7 @@ export function PlateImageViewerModal({
           />
         )}
 
-        {isPdf && pdfLoading && (
+        {isPdf && pdfLoading && !pdfError && (
           <div className="pointer-events-none absolute top-4 left-1/2 -translate-x-1/2 rounded-md border border-slate-700 bg-slate-900/90 px-3 py-1 text-xs font-medium text-slate-200 shadow">
             Caricamento pagina {pdfPage}...
           </div>
@@ -544,4 +560,9 @@ export function PlateImageViewerModal({
       </div>
     </div>
   );
+
+  if (typeof document === 'undefined') {
+    return modalNode;
+  }
+  return createPortal(modalNode, document.body);
 }

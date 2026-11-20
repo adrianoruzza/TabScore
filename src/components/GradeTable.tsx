@@ -443,7 +443,9 @@ export function GradeTable({
       return;
     }
     const measure = () => {
-      const h = Math.round(rowEl.getBoundingClientRect().height);
+      const h = Math.round(
+        rowEl.offsetHeight || rowEl.getBoundingClientRect().height
+      );
       if (h > 0) {
         setRow1Height((prev) => (prev === h ? prev : h));
       }
@@ -1687,6 +1689,7 @@ export function GradeTable({
                           manualDelayDays={rec.manualDelayDays ?? 0}
                           initialAverage={calc.initialAverage}
                           totalPenalty={totalPenalty}
+                          isPenaltyExempt={Boolean(calc.isPenaltyExempt)}
                           finalGrade={calc.finalGrade}
                           isManualOverride={Boolean(calc.isManualOverride)}
                           isConfirmed={calc.isConfirmed}
@@ -2196,6 +2199,7 @@ const FragmentFolderCells = memo(function FragmentFolderCells({
   manualDelayDays,
   initialAverage,
   totalPenalty,
+  isPenaltyExempt,
   finalGrade,
   isManualOverride,
   isConfirmed,
@@ -2219,6 +2223,7 @@ const FragmentFolderCells = memo(function FragmentFolderCells({
   manualDelayDays: number;
   initialAverage: number | null;
   totalPenalty: number;
+  isPenaltyExempt: boolean;
   finalGrade: number | null;
   isManualOverride: boolean;
   isConfirmed: boolean;
@@ -2346,7 +2351,13 @@ const FragmentFolderCells = memo(function FragmentFolderCells({
           type="button"
           onClick={() => onOpenDetail(studentId, folder)}
           title={
-            totalPenalty > 0
+            isPenaltyExempt
+              ? `Media voti: ${
+                  initialAverage !== null
+                    ? formatDecimalIt(initialAverage, 2)
+                    : '—'
+                } · Studente esente dalle penalità della classe (clicca per dettaglio)`
+              : totalPenalty > 0
               ? `Media voti (prima delle penalità): ${
                   initialAverage !== null
                     ? formatDecimalIt(initialAverage, 2)
@@ -2365,11 +2376,15 @@ const FragmentFolderCells = memo(function FragmentFolderCells({
           <span className="text-[11px] font-semibold text-slate-700">
             {initialAverage !== null ? formatDecimalIt(initialAverage, 2) : '—'}
           </span>
-          {totalPenalty > 0 && (
+          {totalPenalty > 0 ? (
             <span className="font-sans text-[9.5px] font-semibold leading-none tracking-tight tabular-nums text-rose-600">
               -{formatDecimalIt(totalPenalty, 2)}
             </span>
-          )}
+          ) : isPenaltyExempt ? (
+            <span className="font-sans text-[8.5px] font-semibold leading-none tracking-tight text-emerald-700">
+              esente
+            </span>
+          ) : null}
         </button>
       </td>
 

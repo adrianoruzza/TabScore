@@ -289,8 +289,14 @@ function mergeStudent(
     local.supportNeeds ?? [],
     remote.supportNeeds ?? []
   );
+  const exemptRes = mergeScalar3Way(
+    hasBase,
+    Boolean(base?.exemptFromPenalties),
+    Boolean(local.exemptFromPenalties),
+    Boolean(remote.exemptFromPenalties)
+  );
 
-  if (!lastNameRes.ok || !firstNameRes.ok || !needsRes.ok) {
+  if (!lastNameRes.ok || !firstNameRes.ok || !needsRes.ok || !exemptRes.ok) {
     conflicts.push(
       `${className} — Studente "${local.lastName} ${local.firstName}" modificato in modo diverso su entrambi i dispositivi`
     );
@@ -299,6 +305,9 @@ function mergeStudent(
   const orderRes = mergeScalar3Way(hasBase, base?.order, local.order, remote.order);
   const mergedOrder = orderRes.ok ? orderRes.value : Math.min(local.order, remote.order);
   const mergedNeeds = needsRes.ok ? needsRes.value : local.supportNeeds ?? [];
+  const mergedExempt = exemptRes.ok
+    ? exemptRes.value
+    : Boolean(local.exemptFromPenalties);
   const mergedHistory = mergeStudentTransferHistories(
     local.transferHistory,
     remote.transferHistory
@@ -310,7 +319,12 @@ function mergeStudent(
     firstName: firstNameRes.ok ? firstNameRes.value : local.firstName,
     order: mergedOrder,
   };
-  if (mergedNeeds.length > 0) out.supportNeeds = mergedNeeds;
+  if (mergedNeeds.length > 0) {
+    out.supportNeeds = mergedNeeds;
+    if (mergedExempt) {
+      out.exemptFromPenalties = true;
+    }
+  }
   if (mergedHistory && mergedHistory.length > 0) {
     out.transferHistory = mergedHistory;
   }
