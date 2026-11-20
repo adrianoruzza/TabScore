@@ -1,9 +1,10 @@
-import { ArrowLeft, Plus, RotateCcw } from 'lucide-react';
+import { ArrowLeft, Filter, Plus, RotateCcw } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import type { ClassData } from '../../types/gradebook';
 import {
   computeSchoolDataSnapshot,
   YEAR_LEVEL_META,
+  type ClassYearLevel,
   type SchoolDataFilter,
   type YearFilterValue,
 } from '../../utils/schoolDataAnalytics';
@@ -16,6 +17,26 @@ interface DataDashboardViewProps {
   classes: ClassData[];
   onBackToGradebook: () => void;
   onOpenClassManager: () => void;
+}
+
+function serializeYearFilterValue(value: YearFilterValue): string {
+  return String(value);
+}
+
+function parseYearFilterValue(raw: string): YearFilterValue {
+  if (raw === 'all') return 'all';
+  if (raw === 'unclassified') return 'unclassified';
+  const parsed = Number(raw);
+  if (
+    parsed === 1 ||
+    parsed === 2 ||
+    parsed === 3 ||
+    parsed === 4 ||
+    parsed === 5
+  ) {
+    return parsed as ClassYearLevel;
+  }
+  return 'all';
 }
 
 export function DataDashboardView({
@@ -83,22 +104,34 @@ export function DataDashboardView({
   const activeScopeLabel =
     filter.yearLevel === 'all'
       ? 'Tutte le classi attive'
-      : YEAR_LEVEL_META[filter.yearLevel].label;
+      : `Filtro: ${YEAR_LEVEL_META[filter.yearLevel].label}`;
 
-  const yearFilterOptions: Array<{
+  const yearSelectOptions: Array<{
     value: YearFilterValue;
     label: string;
-    count: number;
+    shortLabel: string;
+    classCount: number;
+    studentCount: number;
   }> = [
     {
       value: 'all',
-      label: 'Tutti gli anni',
-      count: snapshot.globalOverview.totalClasses,
+      label: `Tutti gli anni scolastici (${snapshot.globalOverview.totalClasses} ${
+        snapshot.globalOverview.totalClasses === 1 ? 'classe' : 'classi'
+      })`,
+      shortLabel: 'Tutti',
+      classCount: snapshot.globalOverview.totalClasses,
+      studentCount: snapshot.globalOverview.totalStudents,
     },
     ...snapshot.yearDistribution.map((row) => ({
       value: row.yearLevel as YearFilterValue,
-      label: row.shortLabel,
-      count: row.classCount,
+      label: `${row.label} (${row.classCount} ${
+        row.classCount === 1 ? 'classe' : 'classi'
+      } · ${row.studentCount} ${
+        row.studentCount === 1 ? 'studente' : 'studenti'
+      })`,
+      shortLabel: row.shortLabel,
+      classCount: row.classCount,
+      studentCount: row.studentCount,
     })),
   ];
 
@@ -155,81 +188,133 @@ export function DataDashboardView({
             {/* Filter & Consultation Bar */}
             <section
               aria-label="Filtri di consultazione"
-              className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-white px-4 py-3.5 sm:px-5 lg:flex-row lg:items-center lg:justify-between"
+              className="space-y-3 rounded-lg border border-slate-200 bg-white px-4 py-3.5 sm:px-5"
             >
-              {/* Year segmented filter */}
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span className="mr-1 text-xs font-medium text-slate-500">
-                  Anno:
-                </span>
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                {/* Primary School Year Filter Selector */}
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <label
+                    htmlFor="data-dashboard-year-select"
+                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700 whitespace-nowrap"
+                  >
+                    <Filter className="h-3.5 w-3.5 text-blue-700" />
+                    Anno scolastico:
+                  </label>
+                  <select
+                    id="data-dashboard-year-select"
+                    value={serializeYearFilterValue(filter.yearLevel)}
+                    onChange={(e) =>
+                      handleYearFilterChange(
+                        parseYearFilterValue(e.target.value)
+                      )
+                    }
+                    className={`h-9 min-w-[230px] rounded-md border px-2.5 text-xs font-medium focus:border-blue-600 focus:outline-none ${
+                      filter.yearLevel !== 'all'
+                        ? 'border-blue-400 bg-blue-50/60 text-blue-950 font-semibold'
+                        : 'border-slate-300 bg-white text-slate-900'
+                    }`}
+                  >
+                    {yearSelectOptions.map((opt) => (
+                      <option
+                        key={serializeYearFilterValue(opt.value)}
+                        value={serializeYearFilterValue(opt.value)}
+                      >
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Single-class detail selector & reset */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <label
+                    htmlFor="data-dashboard-class-select"
+                    className="text-xs font-medium text-slate-600 whitespace-nowrap"
+                  >
+                    Dettaglio classe:
+                  </label>
+                  <select
+                    id="data-dashboard-class-select"
+                    value={filter.selectedClassId ?? ''}
+                    onChange={(e) =>
+                      handleSelectClass(e.target.value ? e.target.value : null)
+                    }
+                    disabled={snapshot.filteredClasses.length === 0}
+                    className="h-9 min-w-[200px] rounded-md border border-slate-300 bg-white px-2.5 text-xs font-medium text-slate-900 focus:border-blue-600 focus:outline-none disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
+                  >
+                    <option value="">
+                      {snapshot.filteredClasses.length === 0
+                        ? 'Nessuna classe nel filtro'
+                        : 'Tutte le classi visualizzate'}
+                    </option>
+                    {snapshot.filteredClasses.map((cls) => (
+                      <option key={cls.classId} value={cls.classId}>
+                        {cls.className} — {cls.totalStudents} studenti
+                      </option>
+                    ))}
+                  </select>
+
+                  {hasActiveFilters && (
+                    <button
+                      type="button"
+                      onClick={handleResetFilters}
+                      className="inline-flex h-9 items-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-100 hover:text-slate-900 whitespace-nowrap"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      Ripristina
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Quick year switcher synchronized with the dropdown selector */}
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-2.5">
                 <div
                   role="group"
-                  aria-label="Filtra per anno scolastico"
+                  aria-label="Selezione rapida anno scolastico"
                   className="flex flex-wrap items-center gap-1 rounded-md bg-slate-100 p-1"
                 >
-                  {yearFilterOptions.map((opt) => {
+                  {yearSelectOptions.map((opt) => {
                     const isActive = filter.yearLevel === opt.value;
                     return (
                       <button
-                        key={String(opt.value)}
+                        key={`quick-${serializeYearFilterValue(opt.value)}`}
                         type="button"
+                        aria-pressed={isActive}
                         onClick={() => handleYearFilterChange(opt.value)}
                         className={`rounded px-2.5 py-1 text-xs font-medium transition-colors whitespace-nowrap ${
                           isActive
-                            ? 'bg-white text-slate-900 shadow-xs'
+                            ? 'bg-white text-blue-800 shadow-xs font-semibold'
                             : 'text-slate-600 hover:text-slate-900'
                         }`}
                       >
-                        {opt.label}
-                        {opt.value !== 'all' && opt.count > 0 && (
+                        {opt.shortLabel}
+                        {opt.value !== 'all' && opt.classCount > 0 && (
                           <span className="ml-1 font-mono text-[11px] text-slate-400 tabular-nums">
-                            ({opt.count})
+                            ({opt.classCount})
                           </span>
                         )}
                       </button>
                     );
                   })}
                 </div>
-              </div>
 
-              {/* Single-class detail selector & reset */}
-              <div className="flex flex-wrap items-center gap-2">
-                <label
-                  htmlFor="data-dashboard-class-select"
-                  className="text-xs font-medium text-slate-500 whitespace-nowrap"
-                >
-                  Dettaglio classe:
-                </label>
-                <select
-                  id="data-dashboard-class-select"
-                  value={filter.selectedClassId ?? ''}
-                  onChange={(e) =>
-                    handleSelectClass(e.target.value ? e.target.value : null)
-                  }
-                  className="h-9 min-w-[200px] rounded-md border border-slate-300 bg-white px-2.5 text-xs font-medium text-slate-900 focus:border-blue-600 focus:outline-none"
-                >
-                  <option value="">Tutte le classi (panoramica)</option>
-                  {snapshot.filteredClasses.map((cls) => (
-                    <option key={cls.classId} value={cls.classId}>
-                      {cls.className} — {cls.totalStudents} studenti
-                    </option>
-                  ))}
-                </select>
-
-                {hasActiveFilters && (
-                  <button
-                    type="button"
-                    onClick={handleResetFilters}
-                    className="inline-flex h-9 items-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-2.5 text-xs font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 whitespace-nowrap"
-                  >
-                    <RotateCcw className="h-3.5 w-3.5" />
-                    Ripristina
-                  </button>
+                {filter.yearLevel !== 'all' && (
+                  <div className="text-xs text-slate-600 tabular-nums">
+                    Visualizzazione filtrata:{' '}
+                    <span className="font-semibold text-blue-800">
+                      {YEAR_LEVEL_META[filter.yearLevel].label}
+                    </span>{' '}
+                    · {snapshot.filteredOverview.totalStudents} di{' '}
+                    {snapshot.globalOverview.totalStudents} studenti (
+                    {snapshot.filteredOverview.totalClasses} di{' '}
+                    {snapshot.globalOverview.totalClasses} classi)
+                  </div>
                 )}
               </div>
             </section>
 
-            {/* Module 1: General Population Overview KPIs */}
+            {/* Module 1: General Population Overview KPIs (dynamically updated by year filter) */}
             <OverviewKpiStrip
               overview={displayedOverview}
               scopeLabel={activeScopeLabel}
@@ -243,16 +328,20 @@ export function DataDashboardView({
               />
             )}
 
-            {/* Module 2: Distribution by School Year */}
+            {/* Module 2: Distribution by School Year (dynamically switches to filtered year's classes) */}
             <YearDistributionSection
               rows={snapshot.yearDistribution}
-              totalStudents={snapshot.globalOverview.totalStudents}
+              filteredClasses={snapshot.filteredClasses}
+              filteredTotalStudents={snapshot.filteredOverview.totalStudents}
+              globalTotalStudents={snapshot.globalOverview.totalStudents}
               hasUnclassifiedClasses={snapshot.hasUnclassifiedClasses}
               activeYearFilter={filter.yearLevel}
+              selectedClassId={filter.selectedClassId}
               onSelectYearFilter={handleYearFilterChange}
+              onSelectClass={handleSelectClass}
             />
 
-            {/* Module 3: DSA, BES & H Distribution by Class */}
+            {/* Module 3: DSA, BES & H Distribution by Class (table + totals + comparative chart all filtered) */}
             <SupportDistributionSection
               classes={snapshot.filteredClasses}
               totals={snapshot.filteredOverview}

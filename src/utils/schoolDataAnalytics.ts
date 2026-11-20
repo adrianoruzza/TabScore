@@ -57,6 +57,8 @@ export interface ClassDataSummary {
   dsaPct: number;
   besPct: number;
   hPct: number;
+  /** Percentage of students in this class relative to the currently filtered population. */
+  shareOfFilteredStudentsPct: number;
 }
 
 export interface YearDistributionRow {
@@ -105,8 +107,10 @@ export interface SchoolDataSnapshot {
   globalOverview: SchoolPopulationOverview;
   /** Totals across the classes matching the active year filter. */
   filteredOverview: SchoolPopulationOverview;
-  /** Year breakdown computed across all classes (always reflects the full school population). */
+  /** Year breakdown computed across all classes (full school population). */
   yearDistribution: YearDistributionRow[];
+  /** Year breakdown filtered by the active school year selector (percentages normalized to filtered total). */
+  filteredYearDistribution: YearDistributionRow[];
   /** Whether at least one class could not be reliably matched to years 1..5. */
   hasUnclassifiedClasses: boolean;
   /** List of all classes with computed statistics, preserving TabScore class order. */
@@ -324,6 +328,7 @@ export function computeSchoolDataSnapshot(
       dsaPct: calcPercentage(support.dsa, totalStudents),
       besPct: calcPercentage(support.bes, totalStudents),
       hPct: calcPercentage(support.h, totalStudents),
+      shareOfFilteredStudentsPct: 0,
     };
   });
 
@@ -377,16 +382,39 @@ export function computeSchoolDataSnapshot(
     };
   });
 
-  const filteredClasses =
+  const rawFilteredClasses =
     filter.yearLevel === 'all'
       ? allClasses
       : allClasses.filter((c) => c.yearLevel === filter.yearLevel);
 
-  const filteredOverview = aggregateOverview(filteredClasses);
+  const filteredOverview = aggregateOverview(rawFilteredClasses);
+
+  const filteredClasses: ClassDataSummary[] = rawFilteredClasses.map((item) => ({
+    ...item,
+    shareOfFilteredStudentsPct: calcPercentage(
+      item.totalStudents,
+      filteredOverview.totalStudents
+    ),
+  }));
+
+  const filteredYearDistribution: YearDistributionRow[] =
+    filter.yearLevel === 'all'
+      ? yearDistribution
+      : yearDistribution
+          .filter((row) => row.yearLevel === filter.yearLevel)
+          .map((row) => ({
+            ...row,
+            studentPercentage: calcPercentage(
+              row.studentCount,
+              filteredOverview.totalStudents
+            ),
+          }));
 
   let selectedClassDetail: SelectedClassAnalytics | null = null;
   if (filter.selectedClassId) {
-    const found = allClasses.find((c) => c.classId === filter.selectedClassId);
+    const found = filteredClasses.find(
+      (c) => c.classId === filter.selectedClassId
+    );
     if (found) {
       const cohortRow = yearDistribution.find(
         (row) => row.yearLevel === found.yearLevel
@@ -414,6 +442,7 @@ export function computeSchoolDataSnapshot(
     globalOverview,
     filteredOverview,
     yearDistribution,
+    filteredYearDistribution,
     hasUnclassifiedClasses,
     allClasses,
     filteredClasses,
