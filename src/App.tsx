@@ -397,13 +397,32 @@ export default function App() {
           destructive: false,
         };
       }
-      case 'plate':
+      case 'plate': {
+        const currentPlates = activeClass?.plates ?? [];
+        const sortedForNotice = [...currentPlates].sort(
+          (a, b) => (a.order ?? a.number) - (b.order ?? b.number) || a.number - b.number
+        );
+        const plateIdx = sortedForNotice.findIndex(
+          (p) => p.id === confirmTarget.plate.id
+        );
+        const hasSubsequent =
+          plateIdx >= 0 && plateIdx < sortedForNotice.length - 1;
+        const hasFolders = Boolean(activeClass && activeClass.folders.length > 0);
+        const extraNotice =
+          hasSubsequent && hasFolders
+            ? ' Le tavole successive verranno rinumerate automaticamente e le associazioni alle cartelline saranno riallineate per mantenere gli intervalli previsti, senza perdere i dati delle altre tavole.'
+            : hasSubsequent
+            ? ' Le tavole successive verranno rinumerate automaticamente in modo progressivo, preservando tutti i dati delle altre tavole.'
+            : hasFolders
+            ? ' Le associazioni alle cartelline verranno aggiornate senza alterare le altre tavole.'
+            : '';
         return {
           title: `Eliminare la Tavola ${confirmTarget.plate.number}?`,
-          description: `La tavola "${confirmTarget.plate.title}" e tutti i voti/stati registrati dagli studenti per questa tavola saranno rimossi.`,
+          description: `La tavola "${confirmTarget.plate.title}" e tutti i voti/stati registrati dagli studenti per questa tavola saranno rimossi.${extraNotice}`,
           confirmLabel: 'Elimina',
           destructive: true,
         };
+      }
       case 'folder':
         return {
           title: `Eliminare "${confirmTarget.folder.title}"?`,

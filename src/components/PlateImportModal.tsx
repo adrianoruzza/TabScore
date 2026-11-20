@@ -659,10 +659,10 @@ export function PlateImportModal({
                   <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-700" />
                   <div>
                     <span className="font-semibold">
-                      Attenzione alla sostituzione:
+                      Sostituzione elenco tavole:
                     </span>{' '}
-                    le {resolvedExistingPlates.length} tavole attuali di &quot;
-                    {resolvedTargetName}&quot; e i relativi voti saranno sostituiti dal nuovo elenco. Studenti e cartelline resteranno intatti.
+                    i titoli e la numerazione progressiva delle tavole di &quot;
+                    {resolvedTargetName}&quot; saranno aggiornati dal nuovo elenco. Studenti, cartelline esistenti, relativi intervalli, consegne e dati già registrati resteranno intatti.
                   </div>
                 </div>
               )}

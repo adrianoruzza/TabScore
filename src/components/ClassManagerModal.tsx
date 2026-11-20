@@ -605,7 +605,7 @@ export function ClassManagerModal({
                       Importa elenco tavole in &quot;{plateImportTargetClass.name}&quot;
                     </h4>
                     <p className="mt-0.5 text-[11px] text-slate-600">
-                      Importa da un file esterno (Excel, Word o TXT) con anteprima modificabile, oppure copia la struttura delle tavole da un&apos;altra classe. Studenti, voti, consegne e statistiche non vengono toccati.
+                      Importa da un file esterno (Excel, Word o TXT) con anteprima modificabile, oppure importa titoli e numerazione progressiva da un&apos;altra classe. Le cartelline esistenti, i loro intervalli, studenti, consegne e dati registrati restano invariati.
                     </p>
                   </div>
                   <button
@@ -734,10 +734,18 @@ export function ClassManagerModal({
                       <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-700" />
                       <div>
                         <span className="font-semibold">
-                          Attenzione alla sostituzione:
+                          Sostituzione elenco tavole:
                         </span>{' '}
-                        le {plateImportTargetClass.plates.length} tavole attuali di &quot;
-                        {plateImportTargetClass.name}&quot; e i relativi voti saranno sostituiti dal nuovo elenco. Studenti e cartelline resteranno intatti.
+                        i titoli e la numerazione progressiva delle tavole di &quot;
+                        {plateImportTargetClass.name}&quot; verranno aggiornati secondo l&apos;elenco selezionato. Tutte le cartelline esistenti, i loro intervalli, le consegne, le date, i voti e le annotazioni già registrate resteranno intatti
+                        {plateImportSourceClass &&
+                        plateImportSourceClass.plates.length <
+                          plateImportTargetClass.plates.length
+                          ? ` (verranno rimosse solo le ${
+                              plateImportTargetClass.plates.length -
+                              plateImportSourceClass.plates.length
+                            } tavole eccedenti in coda).`
+                          : '.'}
                       </div>
                     </div>
                   )}
@@ -1014,9 +1022,8 @@ export function ClassManagerModal({
                           </label>
                         )}
                         <p className="text-[11px] text-slate-500">
-                          Verranno importate le {createSourceClass.plates.length}{' '}
-                          tavole (numeri, titoli, date e note). Studenti, voti,
-                          consegne e statistiche non verranno copiati.
+                          Verranno importati solo i titoli, la numerazione progressiva e le note descrittive delle {createSourceClass.plates.length}{' '}
+                          tavole. Cartelline, studenti, date, voti, consegne e statistiche non verranno copiati.
                         </p>
                       </div>
                     )}

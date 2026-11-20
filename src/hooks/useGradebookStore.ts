@@ -7,6 +7,7 @@ import type {
   ClassSettings,
   FolderDelivery,
   FolderDeliveryStatus,
+  FolderStudentRecord,
   FullBackupArchive,
   GradebookStoreState,
   Plate,
@@ -217,34 +218,181 @@ function normalizePlateTitleKey(title: string): string {
   return title.trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
+export function realignFolderPlateIdsBySlots(
+  folders: FolderDelivery[],
+  oldSortedPlates: Plate[],
+  newSortedPlates: Plate[]
+): FolderDelivery[] {
+  const oldIndexByPlateId = new Map<string, number>();
+  oldSortedPlates.forEach((p, idx) => {
+    oldIndexByPlateId.set(p.id, idx);
+  });
+
+  return folders.map((folder) => {
+    const slotIndices = Array.from(
+      new Set(
+        folder.plateIds
+          .map((pid) => oldIndexByPlateId.get(pid))
+          .filter((idx): idx is number => idx !== undefined)
+      )
+    ).sort((a, b) => a - b);
+
+    const nextPlateIds: string[] = [];
+    for (const slotIdx of slotIndices) {
+      if (slotIdx >= 0 && slotIdx < newSortedPlates.length) {
+        nextPlateIds.push(newSortedPlates[slotIdx].id);
+      }
+    }
+
+    return {
+      ...folder,
+      plateIds: nextPlateIds,
+    };
+  });
+}
+
+function pruneFolderRecordsExtraMissing(
+  folderRecords: ClassData['folderRecords'],
+  validPlateIds: Set<string>
+): ClassData['folderRecords'] {
+  const next: ClassData['folderRecords'] = {};
+  for (const [stuId, byFolder] of Object.entries(folderRecords)) {
+    const nextByFolder: Record<string, FolderStudentRecord> = {};
+    for (const [folderId, rec] of Object.entries(byFolder)) {
+      if (
+        Array.isArray(rec.extraMissingPlateIds) &&
+        rec.extraMissingPlateIds.some((pid) => !validPlateIds.has(pid))
+      ) {
+        nextByFolder[folderId] = {
+          ...rec,
+          extraMissingPlateIds: rec.extraMissingPlateIds.filter((pid) =>
+            validPlateIds.has(pid)
+          ),
+        };
+      } else {
+        nextByFolder[folderId] = rec;
+      }
+    }
+    next[stuId] = nextByFolder;
+  }
+  return next;
+}
+
+export function applyDeletePlate(
+  prevState: GradebookStoreState,
+  classId: string,
+  plateId: string,
+  now: string = new Date().toISOString()
+): GradebookStoreState {
+  const target = prevState.classes.find((c) => c.id === classId);
+  const plate = target?.plates.find((p) => p.id === plateId);
+  if (!target || !plate) return prevState;
+
+  const oldSortedPlates = sortPlates(target.plates);
+  const remainingPlates = oldSortedPlates.filter((p) => p.id !== plateId);
+  const renumberedPlates: Plate[] = remainingPlates.map((p, idx) => ({
+    ...p,
+    number: idx + 1,
+    order: idx,
+  }));
+
+  const validPlateIds = new Set(renumberedPlates.map((p) => p.id));
+
+  const nextEvals: ClassData['evaluations'] = {};
+  for (const [stuId, map] of Object.entries(target.evaluations)) {
+    const copy = { ...map };
+    delete copy[plateId];
+    nextEvals[stuId] = copy;
+  }
+
+  const nextFolders = realignFolderPlateIdsBySlots(
+    target.folders,
+    oldSortedPlates,
+    renumberedPlates
+  );
+
+  const nextFolderRecords = pruneFolderRecordsExtraMissing(
+    target.folderRecords,
+    validPlateIds
+  );
+
+  const renumberedCount = oldSortedPlates.filter(
+    (p, idx) =>
+      p.id !== plateId &&
+      idx > oldSortedPlates.findIndex((x) => x.id === plateId)
+  ).length;
+  const renumberDetail =
+    renumberedCount > 0
+      ? ` Rinumerate ${renumberedCount} ${
+          renumberedCount === 1 ? 'tavola successiva' : 'tavole successive'
+        }${
+          target.folders.length > 0
+            ? ' e riallineati gli intervalli delle cartelline'
+            : ''
+        }.`
+      : '';
+
+  return {
+    ...prevState,
+    classes: prevState.classes.map((c) =>
+      c.id === classId
+        ? {
+            ...c,
+            plates: renumberedPlates,
+            evaluations: nextEvals,
+            folders: nextFolders,
+            folderRecords: nextFolderRecords,
+            updatedAt: now,
+          }
+        : c
+    ),
+    auditLog: [
+      makeLog(
+        classId,
+        target.name,
+        'tavola',
+        'Eliminazione tavola',
+        `Eliminata Tavola ${plate.number}: "${plate.title}".${renumberDetail}`
+      ),
+      ...prevState.auditLog,
+    ].slice(0, 500),
+  };
+}
+
 export function clonePlatesForImport(
   sourcePlates: Plate[],
   options?: {
     includeAttachments?: boolean;
     startOrder?: number;
+    startNumber?: number;
     reservedNumbers?: Set<number>;
+    preservePlateSlots?: Plate[];
   }
 ): Plate[] {
   const sorted = sortPlates(sourcePlates);
   const startOrder = options?.startOrder ?? 0;
   const usedNumbers = new Set<number>(options?.reservedNumbers ?? []);
   const includeAttachments = Boolean(options?.includeAttachments);
+  const preservePlateSlots = options?.preservePlateSlots ?? [];
+  let nextNumber = Math.max(1, options?.startNumber ?? 1);
 
   return sorted.map((src, idx) => {
-    let nextNumber = src.number;
-    if (usedNumbers.has(nextNumber)) {
-      const maxExisting = usedNumbers.size > 0 ? Math.max(...usedNumbers) : 0;
-      nextNumber = Math.max(1, maxExisting + 1);
+    while (usedNumbers.has(nextNumber)) {
+      nextNumber += 1;
     }
-    usedNumbers.add(nextNumber);
+    const assignedNumber = nextNumber;
+    usedNumbers.add(assignedNumber);
+    nextNumber += 1;
+
+    const existingSlot = preservePlateSlots[idx];
 
     const cloned: Plate = {
-      id: createId('plt'),
-      number: nextNumber,
+      id: existingSlot ? existingSlot.id : createId('plt'),
+      number: assignedNumber,
       order: startOrder + idx,
-      title: src.title,
-      assignedDate: src.assignedDate,
-      dueDate: src.dueDate,
+      title: src.title.trim(),
+      assignedDate: existingSlot ? existingSlot.assignedDate : '',
+      dueDate: existingSlot ? existingSlot.dueDate : '',
       notes: src.notes,
       ...(includeAttachments && src.imageDataUrl
         ? {
@@ -310,18 +458,38 @@ export function applyImportPlatesFromClass(
   const now = input.now ?? new Date().toISOString();
 
   if (mode === 'replace') {
+    const oldSortedPlates = sortPlates(targetClass.plates);
     const clonedPlates = clonePlatesForImport(sortedSource, {
       includeAttachments,
       startOrder: 0,
+      startNumber: 1,
+      preservePlateSlots: oldSortedPlates,
     });
+    const validPlateIds = new Set(clonedPlates.map((p) => p.id));
+
+    // Preserve recorded evaluations for surviving plate slots; remove only pruned trailing slots
     const nextEvaluations: ClassData['evaluations'] = {};
-    for (const stuId of Object.keys(targetClass.evaluations)) {
-      nextEvaluations[stuId] = {};
+    for (const [stuId, stuMap] of Object.entries(targetClass.evaluations)) {
+      const kept: Record<string, PlateEvaluation> = {};
+      for (const [pid, ev] of Object.entries(stuMap)) {
+        if (validPlateIds.has(pid)) {
+          kept[pid] = ev;
+        }
+      }
+      nextEvaluations[stuId] = kept;
     }
-    const nextFolders = targetClass.folders.map((f) => ({
-      ...f,
-      plateIds: [],
-    }));
+
+    // Preserve ALL existing destination folders, their order, names, and plate intervals
+    const nextFolders = realignFolderPlateIdsBySlots(
+      targetClass.folders,
+      oldSortedPlates,
+      clonedPlates
+    );
+
+    const nextFolderRecords = pruneFolderRecordsExtraMissing(
+      targetClass.folderRecords,
+      validPlateIds
+    );
 
     const nextState: GradebookStoreState = {
       ...prevState,
@@ -332,6 +500,7 @@ export function applyImportPlatesFromClass(
               plates: clonedPlates,
               evaluations: nextEvaluations,
               folders: nextFolders,
+              folderRecords: nextFolderRecords,
               updatedAt: now,
             }
           : c
@@ -342,7 +511,7 @@ export function applyImportPlatesFromClass(
           targetClass.name,
           'tavola',
           'Sostituzione elenco tavole',
-          `Importate ${clonedPlates.length} tavole da "${sourceClass.name}" in modalità sostituzione (studenti e cartelline preservati).`
+          `Aggiornato elenco con ${clonedPlates.length} tavole da "${sourceClass.name}" (cartelline, intervalli, consegne e dati esistenti preservati).`
         ),
         ...prevState.auditLog,
       ].slice(0, 500),
@@ -358,7 +527,8 @@ export function applyImportPlatesFromClass(
     };
   }
 
-  // Append mode: deduplicate by normalized plate title and avoid number collisions
+  // Append mode: deduplicate by normalized plate title, reconstruct progressive numbering,
+  // and leave existing destination plates, folders, intervals, evaluations and folderRecords untouched.
   const existingTitles = new Set(
     targetClass.plates.map((p) => normalizePlateTitleKey(p.title))
   );
@@ -383,10 +553,15 @@ export function applyImportPlatesFromClass(
     (max, p, idx) => Math.max(max, p.order ?? idx),
     -1
   );
+  const maxNumber = targetClass.plates.reduce(
+    (max, p) => Math.max(max, p.number),
+    0
+  );
   const reservedNumbers = new Set(targetClass.plates.map((p) => p.number));
   const clonedPlates = clonePlatesForImport(platesToAppend, {
     includeAttachments,
     startOrder: maxOrder + 1,
+    startNumber: maxNumber + 1,
     reservedNumbers,
   });
 
@@ -409,7 +584,7 @@ export function applyImportPlatesFromClass(
         'Importazione elenco tavole',
         `Aggiunte ${clonedPlates.length} tavole da "${sourceClass.name}"${
           skippedCount > 0 ? ` (${skippedCount} già presenti saltate)` : ''
-        }.`
+        } (cartelline esistenti preservate).`
       ),
       ...prevState.auditLog,
     ].slice(0, 500),
@@ -534,11 +709,12 @@ export function applyImportPlatesFromExternalList(
     : ' da file esterno';
 
   if (mode === 'replace') {
-    const { plates: builtPlates, skippedCount } = buildPlatesFromExternalEntries(
+    const oldSortedPlates = sortPlates(targetClass.plates);
+    const { plates: rawBuiltPlates, skippedCount } = buildPlatesFromExternalEntries(
       entries,
       { startOrder: 0 }
     );
-    if (builtPlates.length === 0) {
+    if (rawBuiltPlates.length === 0) {
       return {
         nextState: prevState,
         result: {
@@ -550,14 +726,37 @@ export function applyImportPlatesFromExternalList(
       };
     }
 
+    const builtPlates: Plate[] = rawBuiltPlates.map((p, idx) => {
+      const existingSlot = oldSortedPlates[idx];
+      if (!existingSlot) return p;
+      return {
+        ...p,
+        id: existingSlot.id,
+        assignedDate: existingSlot.assignedDate,
+        dueDate: existingSlot.dueDate,
+      };
+    });
+    const validPlateIds = new Set(builtPlates.map((p) => p.id));
+
     const nextEvaluations: ClassData['evaluations'] = {};
-    for (const stuId of Object.keys(targetClass.evaluations)) {
-      nextEvaluations[stuId] = {};
+    for (const [stuId, stuMap] of Object.entries(targetClass.evaluations)) {
+      const kept: Record<string, PlateEvaluation> = {};
+      for (const [pid, ev] of Object.entries(stuMap)) {
+        if (validPlateIds.has(pid)) {
+          kept[pid] = ev;
+        }
+      }
+      nextEvaluations[stuId] = kept;
     }
-    const nextFolders = targetClass.folders.map((f) => ({
-      ...f,
-      plateIds: [],
-    }));
+    const nextFolders = realignFolderPlateIdsBySlots(
+      targetClass.folders,
+      oldSortedPlates,
+      builtPlates
+    );
+    const nextFolderRecords = pruneFolderRecordsExtraMissing(
+      targetClass.folderRecords,
+      validPlateIds
+    );
 
     const nextState: GradebookStoreState = {
       ...prevState,
@@ -568,6 +767,7 @@ export function applyImportPlatesFromExternalList(
               plates: builtPlates,
               evaluations: nextEvaluations,
               folders: nextFolders,
+              folderRecords: nextFolderRecords,
               updatedAt: now,
             }
           : c
@@ -580,7 +780,7 @@ export function applyImportPlatesFromExternalList(
           'Sostituzione elenco tavole da file',
           `Importate ${builtPlates.length} ${
             builtPlates.length === 1 ? 'tavola' : 'tavole'
-          }${fileLabel} in modalità sostituzione (studenti e cartelline preservati).`
+          }${fileLabel} in modalità sostituzione (studenti, cartelline e intervalli preservati).`
         ),
         ...prevState.auditLog,
       ].slice(0, 500),
@@ -1607,48 +1807,7 @@ export function useGradebookStore() {
 
   const deletePlate = useCallback(
     (classId: string, plateId: string) => {
-      commit((prev) => {
-        const target = prev.classes.find((c) => c.id === classId);
-        const plate = target?.plates.find((p) => p.id === plateId);
-        if (!target || !plate) return prev;
-
-        const nextEvals: ClassData['evaluations'] = {};
-        for (const [stuId, map] of Object.entries(target.evaluations)) {
-          const copy = { ...map };
-          delete copy[plateId];
-          nextEvals[stuId] = copy;
-        }
-
-        const nextFolders = target.folders.map((f) => ({
-          ...f,
-          plateIds: f.plateIds.filter((id) => id !== plateId),
-        }));
-
-        return {
-          ...prev,
-          classes: prev.classes.map((c) =>
-            c.id === classId
-              ? {
-                  ...c,
-                  plates: c.plates.filter((p) => p.id !== plateId),
-                  evaluations: nextEvals,
-                  folders: nextFolders,
-                  updatedAt: new Date().toISOString(),
-                }
-              : c
-          ),
-          auditLog: [
-            makeLog(
-              classId,
-              target.name,
-              'tavola',
-              'Eliminazione tavola',
-              `Eliminata Tavola ${plate.number}: "${plate.title}".`
-            ),
-            ...prev.auditLog,
-          ],
-        };
-      });
+      commit((prev) => applyDeletePlate(prev, classId, plateId));
     },
     [commit]
   );
