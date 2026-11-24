@@ -9,6 +9,7 @@ import {
   getInMemoryAccessToken,
   initGoogleDriveAuth,
   invalidateInMemoryAccessToken,
+  isGoogleDriveAuthConfigured,
   mapGoogleAuthError,
   signInWithGoogleDrive,
   signOutGoogleDrive,
@@ -1275,9 +1276,12 @@ export function useGoogleDriveSync({
     }
   }, [updateMeta]);
 
+  const isAuthConfigured = isGoogleDriveAuthConfigured();
+
   return {
     account,
     hasValidToken,
+    isAuthConfigured,
     syncMeta,
     status,
     hasPendingChanges,

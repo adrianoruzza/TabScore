@@ -493,9 +493,25 @@ async function driveFetch(
     }
 
     if (!response.ok) {
-      const text = await response.text().catch(() => '');
+      let safeDetail = '';
+      try {
+        const body = (await response.json()) as {
+          error?: { message?: string };
+        };
+        if (
+          typeof body?.error?.message === 'string' &&
+          body.error.message.trim() &&
+          !/AIza[0-9A-Za-z_-]{10,}|ya29\.[0-9A-Za-z_-]{10,}/.test(
+            body.error.message
+          )
+        ) {
+          safeDetail = body.error.message.trim().slice(0, 200);
+        }
+      } catch {
+        // Ignore non-JSON error payloads
+      }
       throw new DriveApiError(
-        text || `Errore Google Drive (${response.status}).`,
+        safeDetail || `Errore Google Drive (${response.status}).`,
         response.status,
         'unknown'
       );

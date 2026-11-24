@@ -576,12 +576,21 @@ export function MobilePlateView({
         typeof document !== 'undefined' &&
         createPortal(
           <div
+            onClick={(e) => {
+              e.stopPropagation();
+              if (e.target === e.currentTarget) {
+                setMobileGradeTarget(null);
+              }
+            }}
             className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/40 p-3 sm:items-center"
             role="dialog"
             aria-modal="true"
             aria-label={`Assegna voto a ${mobileGradeTarget.studentName}`}
           >
-            <div className="w-full max-w-xs rounded-lg border border-slate-300 bg-white p-3.5 shadow-2xl">
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-xs rounded-lg border border-slate-300 bg-white p-3.5 shadow-2xl"
+            >
               <div className="mb-2.5 flex items-start justify-between gap-2 border-b border-slate-200 pb-2">
                 <div className="min-w-0">
                   <div className="truncate text-xs font-semibold text-slate-900">
@@ -593,7 +602,10 @@ export function MobilePlateView({
                 </div>
                 <button
                   type="button"
-                  onClick={() => setMobileGradeTarget(null)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setMobileGradeTarget(null);
+                  }}
                   className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
                   aria-label="Chiudi"
                 >

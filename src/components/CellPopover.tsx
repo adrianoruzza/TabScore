@@ -5,6 +5,8 @@ import type { PlateEvaluation, PlateStatus } from '../types/gradebook';
 import { STATUS_META } from '../utils/calculations';
 import { RapidGradePicker } from './RapidGradePicker';
 
+export type CellPopoverCloseReason = 'select' | 'cancel' | 'outside' | 'escape';
+
 interface CellPopoverProps {
   mode: 'status' | 'grade';
   anchorRect: DOMRect;
@@ -13,7 +15,7 @@ interface CellPopoverProps {
   plateTitle: string;
   evaluation: PlateEvaluation;
   onChange: (patch: Partial<PlateEvaluation> & { explicitWasNo?: boolean }) => void;
-  onClose: () => void;
+  onClose: (reason?: CellPopoverCloseReason) => void;
 }
 
 const STATUS_ORDER: PlateStatus[] = ['SI', 'NO', 'ASS', 'WIP'];
@@ -62,42 +64,42 @@ export function CellPopover({
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        onClose();
+        onClose('escape');
         return;
       }
       if (activeMode === 'status') {
         const key = e.key.toLowerCase();
         if (key === 's') {
           onChange({ status: 'SI' });
-          onClose();
+          onClose('select');
         } else if (key === 'n') {
           onChange({ status: 'NO' });
-          onClose();
+          onClose('select');
         } else if (key === 'a') {
           onChange({ status: 'ASS' });
-          onClose();
+          onClose('select');
         } else if (key === 'w') {
           onChange({ status: 'WIP' });
-          onClose();
+          onClose('select');
         } else if (e.key === 'Backspace' || e.key === 'Delete') {
           onChange({ status: null });
-          onClose();
+          onClose('select');
         }
       }
     };
-    const handleClickOutside = (e: MouseEvent) => {
+    const handlePointerDownOutside = (e: PointerEvent) => {
       if (
         popoverRef.current &&
         !popoverRef.current.contains(e.target as Node)
       ) {
-        onClose();
+        onClose('outside');
       }
     };
     window.addEventListener('keydown', handleKey);
-    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('pointerdown', handlePointerDownOutside);
     return () => {
       window.removeEventListener('keydown', handleKey);
-      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('pointerdown', handlePointerDownOutside);
     };
   }, [activeMode, onChange, onClose]);
 
@@ -105,6 +107,7 @@ export function CellPopover({
     <div
       ref={popoverRef}
       style={{ top: pos.top, left: pos.left }}
+      onClick={(e) => e.stopPropagation()}
       className={`fixed z-50 rounded-lg border border-slate-300 bg-white p-3 shadow-2xl ${
         activeMode === 'status' ? 'w-[276px]' : 'w-[304px]'
       }`}
@@ -125,7 +128,10 @@ export function CellPopover({
           {activeMode === 'status' && (
             <button
               type="button"
-              onClick={() => setActiveMode('grade')}
+              onClick={(e) => {
+                e.stopPropagation();
+                setActiveMode('grade');
+              }}
               className="rounded border border-sky-200 bg-sky-50 px-1.5 py-0.5 text-[10.5px] font-semibold text-sky-900 hover:bg-sky-100 whitespace-nowrap"
               title="Passa subito all'inserimento voto senza chiudere"
             >
@@ -134,7 +140,10 @@ export function CellPopover({
           )}
           <button
             type="button"
-            onClick={onClose}
+            onClick={(e) => {
+              e.stopPropagation();
+              onClose('cancel');
+            }}
             className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
             aria-label="Chiudi"
           >
@@ -152,9 +161,10 @@ export function CellPopover({
             {evaluation.status !== null && (
               <button
                 type="button"
-                onClick={() => {
+                onClick={(e) => {
+                  e.stopPropagation();
                   onChange({ status: null });
-                  onClose();
+                  onClose('select');
                 }}
                 className="text-[11px] text-slate-500 hover:text-rose-600"
               >
@@ -172,9 +182,10 @@ export function CellPopover({
                 <button
                   key={code}
                   type="button"
-                  onClick={() => {
+                  onClick={(e) => {
+                    e.stopPropagation();
                     onChange({ status: active ? null : code });
-                    onClose();
+                    onClose('select');
                   }}
                   title={
                     isExNo
@@ -232,9 +243,10 @@ export function CellPopover({
                   <button
                     key={code}
                     type="button"
-                    onClick={() =>
-                      onChange({ status: active ? null : code })
-                    }
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onChange({ status: active ? null : code });
+                    }}
                     title={
                       isExNo
                         ? 'SI* (penalità ex-NO attiva) — aggiorna senza chiudere'
@@ -264,9 +276,9 @@ export function CellPopover({
             currentGrade={evaluation.grade}
             onSelect={(grade) => {
               onChange({ grade });
-              onClose();
+              onClose('select');
             }}
-            onCancel={onClose}
+            onCancel={() => onClose('cancel')}
           />
         </div>
       )}

@@ -1,15 +1,52 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
+import fs from 'fs';
 import path from 'path';
 import {defineConfig} from 'vite';
 import {VitePWA} from 'vite-plugin-pwa';
 
+function resolvePublicGoogleOAuthClientId(): string {
+  const isValidClientId = (val: unknown): val is string =>
+    typeof val === 'string' &&
+    !/^AIza/i.test(val.trim()) &&
+    /^[a-z0-9-]+\.apps\.googleusercontent\.com$/i.test(val.trim());
+
+  const fromEnv = process.env.VITE_GOOGLE_OAUTH_CLIENT_ID;
+  if (isValidClientId(fromEnv)) {
+    return fromEnv.trim();
+  }
+
+  // Strictly read ONLY the public oAuthClientId field; never read or expose apiKey.
+  for (const relPath of ['firebase-applet-config.json', 'oauth-public-config.json']) {
+    try {
+      const fullPath = path.resolve(__dirname, relPath);
+      if (!fs.existsSync(fullPath)) continue;
+      const parsed = JSON.parse(fs.readFileSync(fullPath, 'utf8')) as {
+        oAuthClientId?: unknown;
+      };
+      if (isValidClientId(parsed.oAuthClientId)) {
+        return parsed.oAuthClientId.trim();
+      }
+    } catch {
+      // Ignore missing or unreadable config files
+    }
+  }
+
+  return '';
+}
+
 export default defineConfig(() => {
   const rawBase = process.env.VITE_BASE_PATH?.trim() || '/';
   const base = rawBase.endsWith('/') ? rawBase : `${rawBase}/`;
+  const googleOAuthClientId = resolvePublicGoogleOAuthClientId();
 
   return {
     base,
+    define: {
+      'import.meta.env.VITE_GOOGLE_OAUTH_CLIENT_ID': JSON.stringify(
+        googleOAuthClientId
+      ),
+    },
     plugins: [
       react(),
       tailwindcss(),

@@ -606,6 +606,7 @@ export default function App() {
             zoom={appZoom.zoom}
             zoomPercent={appZoom.zoomPercent}
             isDefaultZoom={appZoom.isDefaultZoom}
+            toolbarPercentRef={appZoom.toolbarPercentRef}
             onSetZoom={(next) => appZoom.setZoom(next)}
             onZoomIn={appZoom.zoomIn}
             onZoomOut={appZoom.zoomOut}
@@ -772,9 +773,14 @@ export default function App() {
         }`}
       >
         <div
-          style={appZoom.zoom !== 1 ? { zoom: appZoom.zoom } : undefined}
+          ref={appZoom.pinchLayerRef}
           className="flex min-h-0 flex-1 flex-col"
         >
+          <div
+            ref={appZoom.zoomLayerRef}
+            style={appZoom.zoom !== 1 ? { zoom: appZoom.zoom } : undefined}
+            className="flex min-h-0 flex-1 flex-col"
+          >
           {activeSection === 'data' ? (
             <DataDashboardView
               classes={state.classes}
@@ -882,6 +888,7 @@ export default function App() {
             </div>
           </>
         )}
+          </div>
         </div>
       </main>
 
@@ -1054,6 +1061,7 @@ export default function App() {
         driveSync={{
           account: driveSync.account,
           hasValidToken: driveSync.hasValidToken,
+          isAuthConfigured: driveSync.isAuthConfigured,
           syncMeta: driveSync.syncMeta,
           status: driveSync.status,
           hasPendingChanges: driveSync.hasPendingChanges,
@@ -1146,6 +1154,8 @@ export default function App() {
       <ZoomToastBadge
         zoomPercent={appZoom.zoomPercent}
         visible={appZoom.isToastVisible}
+        containerRef={appZoom.toastContainerRef}
+        textRef={appZoom.toastTextRef}
       />
     </div>
   );

@@ -65,7 +65,7 @@ export function FolderDatePopover({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
-    const onClickOutside = (e: MouseEvent) => {
+    const onPointerDownOutside = (e: PointerEvent) => {
       if (
         popoverRef.current &&
         !popoverRef.current.contains(e.target as Node)
@@ -74,10 +74,10 @@ export function FolderDatePopover({
       }
     };
     window.addEventListener('keydown', onKey);
-    document.addEventListener('mousedown', onClickOutside);
+    document.addEventListener('pointerdown', onPointerDownOutside);
     return () => {
       window.removeEventListener('keydown', onKey);
-      document.removeEventListener('mousedown', onClickOutside);
+      document.removeEventListener('pointerdown', onPointerDownOutside);
     };
   }, [onClose]);
 
@@ -85,6 +85,7 @@ export function FolderDatePopover({
     <div
       ref={popoverRef}
       style={{ top: pos.top, left: pos.left }}
+      onClick={(e) => e.stopPropagation()}
       className="fixed z-50 w-[280px] rounded-lg border border-slate-300 bg-white p-3.5 shadow-2xl"
       role="dialog"
       aria-label={`Consegna ${folderTitle} per ${studentName}`}
@@ -101,7 +102,10 @@ export function FolderDatePopover({
         </div>
         <button
           type="button"
-          onClick={onClose}
+          onClick={(e) => {
+            e.stopPropagation();
+            onClose();
+          }}
           className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
           aria-label="Chiudi"
         >

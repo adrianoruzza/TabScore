@@ -141,7 +141,10 @@ export function DataDashboardView({
       : snapshot.filteredOverview;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-slate-50">
+    <div
+      data-zoom-scroll-container="true"
+      className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-slate-50 touch-pan-x touch-pan-y"
+    >
       <div className="mx-auto w-full max-w-6xl space-y-6 px-3 py-4 sm:px-6 sm:py-6">
         {/* Section Header */}
         <header className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-200 pb-4">

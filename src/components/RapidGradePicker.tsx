@@ -72,8 +72,13 @@ export function RapidGradePicker({
   const timerRef = useRef<number | null>(null);
   const activePointerIdRef = useRef<number | null>(null);
   const longPressTriggeredRef = useRef(false);
-  const pressedBaseRef = useRef<number | null>(null);
+  const suppressNextClickRef = useRef(false);
+  const sawTouchStartRef = useRef(false);
+  const pendingTouchCommitRef = useRef<number | null>(null);
+  const pendingTouchSuppressClickRef = useRef(false);
   const hoveredVariantRef = useRef<number | null>(null);
+  const onSelectRef = useRef(onSelect);
+  onSelectRef.current = onSelect;
 
   const clearTimer = () => {
     if (timerRef.current !== null) {
@@ -83,10 +88,19 @@ export function RapidGradePicker({
   };
 
   useEffect(() => {
-    return () => clearTimer();
+    return () => {
+      clearTimer();
+      activePointerIdRef.current = null;
+      longPressTriggeredRef.current = false;
+      suppressNextClickRef.current = false;
+      sawTouchStartRef.current = false;
+      pendingTouchCommitRef.current = null;
+      pendingTouchSuppressClickRef.current = false;
+      hoveredVariantRef.current = null;
+    };
   }, []);
 
-  // Close contextual menu on Escape or click outside the menu
+  // Close contextual menu on Escape or tap/click outside the menu
   useEffect(() => {
     if (!contextMenu) return;
 
@@ -114,6 +128,11 @@ export function RapidGradePicker({
     };
   }, [contextMenu]);
 
+  // Pointer tracking ONLY for long-press drag-to-variant selection.
+  // Short taps/clicks are NEVER committed in pointerup — they are committed
+  // in each button's native onClick handler so the browser delivers and consumes
+  // the click event on the button itself BEFORE the popover unmounts, preventing
+  // click fallthrough onto underlying grid cells.
   useEffect(() => {
     const handlePointerMove = (e: PointerEvent) => {
       if (
@@ -141,34 +160,52 @@ export function RapidGradePicker({
       clearTimer();
 
       const wasLongPress = longPressTriggeredRef.current;
-      const base = pressedBaseRef.current;
       const hoveredVal = hoveredVariantRef.current;
+      const isTouchGesture =
+        sawTouchStartRef.current || e.pointerType === 'touch';
 
       activePointerIdRef.current = null;
-      pressedBaseRef.current = null;
+      longPressTriggeredRef.current = false;
       hoveredVariantRef.current = null;
       setHoveredVariant(null);
 
-      if (!wasLongPress && base !== null) {
-        // Short click/tap -> immediately assign integer grade
-        setContextMenu(null);
-        onSelect(base);
+      if (!wasLongPress) {
+        // Short click/tap: do NOT unmount during pointerup; let the button's
+        // native onClick handler consume the click and call onSelect(num).
+        sawTouchStartRef.current = false;
         return;
       }
 
-      if (wasLongPress && hoveredVal !== null) {
-        // Long press + drag onto variant + release -> immediately assign variant
-        setContextMenu(null);
-        onSelect(hoveredVal);
+      if (isTouchGesture && sawTouchStartRef.current) {
+        // Touch gesture after long-press: defer commit/suppression to the
+        // non-passive touchend event that fires immediately after pointerup
+        // in the same turn, where e.preventDefault() cancels synthetic mouse/click
+        // events per the W3C Touch Events spec so nothing can hit underlying cells.
+        pendingTouchSuppressClickRef.current = true;
+        pendingTouchCommitRef.current = hoveredVal;
+        return;
       }
-      // Otherwise keep contextual menu open so user can tap/click a variant
+
+      // Non-touch (mouse / stylus without touch events) long-press release
+      sawTouchStartRef.current = false;
+      if (hoveredVal !== null) {
+        suppressNextClickRef.current = false;
+        setContextMenu(null);
+        onSelectRef.current(hoveredVal);
+      }
+      // If hoveredVal === null, keep contextual menu open; suppressNextClickRef
+      // remains true so any trailing mouse click on the integer button is ignored.
     };
 
     const handlePointerCancel = (e: PointerEvent) => {
       if (activePointerIdRef.current !== e.pointerId) return;
       clearTimer();
       activePointerIdRef.current = null;
-      pressedBaseRef.current = null;
+      longPressTriggeredRef.current = false;
+      suppressNextClickRef.current = false;
+      sawTouchStartRef.current = false;
+      pendingTouchCommitRef.current = null;
+      pendingTouchSuppressClickRef.current = false;
       hoveredVariantRef.current = null;
       setHoveredVariant(null);
     };
@@ -181,7 +218,46 @@ export function RapidGradePicker({
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener('pointercancel', handlePointerCancel);
     };
-  }, [onSelect]);
+  }, []);
+
+  // Non-passive touchend listener on the picker grid: handles touch long-press
+  // release and prevents browser compatibility click events from falling through.
+  useEffect(() => {
+    const gridEl = gridRef.current;
+    if (!gridEl) return;
+
+    const handleTouchEnd = (e: TouchEvent) => {
+      const shouldSuppress = pendingTouchSuppressClickRef.current;
+      const pendingVal = pendingTouchCommitRef.current;
+
+      pendingTouchSuppressClickRef.current = false;
+      pendingTouchCommitRef.current = null;
+      sawTouchStartRef.current = false;
+
+      if (shouldSuppress) {
+        // Spec-compliant suppression of synthetic mouse/click events after touch long-press
+        e.preventDefault();
+        suppressNextClickRef.current = false;
+        if (pendingVal !== null) {
+          setContextMenu(null);
+          onSelectRef.current(pendingVal);
+        }
+      }
+    };
+
+    const handleTouchCancel = () => {
+      pendingTouchSuppressClickRef.current = false;
+      pendingTouchCommitRef.current = null;
+      sawTouchStartRef.current = false;
+    };
+
+    gridEl.addEventListener('touchend', handleTouchEnd, { passive: false });
+    gridEl.addEventListener('touchcancel', handleTouchCancel, { passive: true });
+    return () => {
+      gridEl.removeEventListener('touchend', handleTouchEnd);
+      gridEl.removeEventListener('touchcancel', handleTouchCancel);
+    };
+  }, []);
 
   const handleIntegerPointerDown = (
     e: React.PointerEvent<HTMLButtonElement>,
@@ -189,22 +265,43 @@ export function RapidGradePicker({
     index: number
   ) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
-    e.preventDefault();
     clearTimer();
 
     const rowIndex = Math.floor(index / 3);
     const colIndex = index % 3;
 
+    if (e.pointerType === 'mouse') {
+      sawTouchStartRef.current = false;
+    }
     activePointerIdRef.current = e.pointerId;
-    pressedBaseRef.current = intVal;
     longPressTriggeredRef.current = false;
+    suppressNextClickRef.current = false;
+    pendingTouchCommitRef.current = null;
+    pendingTouchSuppressClickRef.current = false;
     hoveredVariantRef.current = null;
     setHoveredVariant(null);
 
     timerRef.current = window.setTimeout(() => {
       longPressTriggeredRef.current = true;
+      suppressNextClickRef.current = true;
       setContextMenu({ base: intVal, rowIndex, colIndex });
     }, LONG_PRESS_MS);
+  };
+
+  const handleIntegerClick = (
+    e: React.MouseEvent<HTMLButtonElement>,
+    intVal: number
+  ) => {
+    e.stopPropagation();
+    clearTimer();
+
+    if (suppressNextClickRef.current) {
+      suppressNextClickRef.current = false;
+      return;
+    }
+
+    setContextMenu(null);
+    onSelect(intVal);
   };
 
   const contextOptions = contextMenu
@@ -223,6 +320,7 @@ export function RapidGradePicker({
 
   return (
     <div
+      onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
       style={{
         WebkitUserSelect: 'none',
@@ -237,7 +335,10 @@ export function RapidGradePicker({
           {suggestedGrade !== undefined && suggestedGrade !== null ? (
             <button
               type="button"
-              onClick={() => onSelect(suggestedGrade)}
+              onClick={(e) => {
+                e.stopPropagation();
+                onSelect(suggestedGrade);
+              }}
               className="font-medium text-blue-800 hover:underline"
             >
               Applica calcolato ({formatGradeLabel(suggestedGrade)})
@@ -248,7 +349,10 @@ export function RapidGradePicker({
           {onOpenDetail && (
             <button
               type="button"
-              onClick={onOpenDetail}
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenDetail();
+              }}
               className="font-semibold text-blue-800 hover:underline"
             >
               Dettaglio →
@@ -267,7 +371,10 @@ export function RapidGradePicker({
         {contextMenu && (
           <button
             type="button"
-            onClick={() => setContextMenu(null)}
+            onClick={(e) => {
+              e.stopPropagation();
+              setContextMenu(null);
+            }}
             className="rounded px-1.5 py-0.5 text-[10.5px] font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-800"
           >
             Chiudi varianti
@@ -287,13 +394,20 @@ export function RapidGradePicker({
                 key={num}
                 type="button"
                 data-integer-grade-btn={num}
+                onTouchStart={() => {
+                  sawTouchStartRef.current = true;
+                }}
                 onPointerDown={(e) => handleIntegerPointerDown(e, num, idx)}
+                onClick={(e) => handleIntegerClick(e, num)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault();
+                    e.stopPropagation();
+                    setContextMenu(null);
                     onSelect(num);
                   } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
                     e.preventDefault();
+                    e.stopPropagation();
                     setContextMenu({
                       base: num,
                       rowIndex: Math.floor(idx / 3),
@@ -353,7 +467,8 @@ export function RapidGradePicker({
                     type="button"
                     role="menuitem"
                     data-fraction-val={opt.value}
-                    onClick={() => {
+                    onClick={(e) => {
+                      e.stopPropagation();
                       setContextMenu(null);
                       onSelect(opt.value);
                     }}
@@ -393,7 +508,8 @@ export function RapidGradePicker({
         {currentGrade !== null ? (
           <button
             type="button"
-            onClick={() => {
+            onClick={(e) => {
+              e.stopPropagation();
               setContextMenu(null);
               onSelect(null);
             }}
@@ -407,7 +523,10 @@ export function RapidGradePicker({
         )}
         <button
           type="button"
-          onClick={onCancel}
+          onClick={(e) => {
+            e.stopPropagation();
+            onCancel();
+          }}
           className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
         >
           <X className="h-3.5 w-3.5" />

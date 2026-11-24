@@ -54,8 +54,9 @@ import {
   type DeliveryDateColor,
 } from '../utils/deliveryDateColors';
 import { getGradeColorStyle } from '../utils/gradeColors';
+import { isAppWorkspacePinching } from '../hooks/useAppZoom';
 import { isPdfDataUrl } from '../utils/pdfViewer';
-import { CellPopover } from './CellPopover';
+import { CellPopover, type CellPopoverCloseReason } from './CellPopover';
 import { FolderDatePopover } from './FolderDatePopover';
 import { FolderGradePopover } from './FolderGradePopover';
 import { PlateImageViewerModal } from './PlateImageViewerModal';
@@ -288,6 +289,9 @@ export function GradeTable({
 
   useEffect(() => {
     setHighlightedStudentId(null);
+    setActivePopover(null);
+    setActiveDatePopover(null);
+    setActiveFolderGradePopover(null);
     setActivePlatePreview(null);
     setViewerPlateId(null);
     setFocusedGradeCell(null);
@@ -324,11 +328,17 @@ export function GradeTable({
     const handlePointerCancel = (e: PointerEvent) =>
       cancelPendingTimer(e.pointerId);
     const handleWindowBlur = () => cancelPendingTimer();
+    const handleMultiTouch = (e: TouchEvent) => {
+      if (e.touches.length >= 2) {
+        cancelPendingTimer();
+      }
+    };
 
     window.addEventListener('pointermove', handlePointerMove, { passive: true });
     window.addEventListener('pointerup', handlePointerUp);
     window.addEventListener('pointercancel', handlePointerCancel);
     window.addEventListener('blur', handleWindowBlur);
+    window.addEventListener('touchstart', handleMultiTouch, { passive: true });
     return () => {
       if (holdTimerRef.current !== null) {
         window.clearTimeout(holdTimerRef.current);
@@ -338,6 +348,7 @@ export function GradeTable({
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener('pointercancel', handlePointerCancel);
       window.removeEventListener('blur', handleWindowBlur);
+      window.removeEventListener('touchstart', handleMultiTouch);
     };
   }, []);
 
@@ -374,6 +385,7 @@ export function GradeTable({
     studentId: string
   ) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (isAppWorkspacePinching(scrollContainerRef.current)) return;
     const target = e.target as HTMLElement | null;
     if (target?.closest('button, input, [data-no-row-highlight="true"]')) {
       return;
@@ -689,6 +701,10 @@ export function GradeTable({
 
   const handleOpenCellStatus = useCallback(
     (studentId: string, plateId: string, rect: DOMRect) => {
+      if (isAppWorkspacePinching(scrollContainerRef.current)) return;
+      setActiveDatePopover(null);
+      setActiveFolderGradePopover(null);
+      setActivePlatePreview(null);
       setFocusedGradeCell(null);
       setActivePopover({ mode: 'status', studentId, plateId, rect });
     },
@@ -697,6 +713,10 @@ export function GradeTable({
 
   const handleOpenCellGrade = useCallback(
     (studentId: string, plateId: string, rect: DOMRect) => {
+      if (isAppWorkspacePinching(scrollContainerRef.current)) return;
+      setActiveDatePopover(null);
+      setActiveFolderGradePopover(null);
+      setActivePlatePreview(null);
       setFocusedGradeCell({ studentId, plateId });
       setActivePopover({ mode: 'grade', studentId, plateId, rect });
     },
@@ -705,6 +725,10 @@ export function GradeTable({
 
   const handleOpenFolderDate = useCallback(
     (studentId: string, folderId: string, rect: DOMRect) => {
+      if (isAppWorkspacePinching(scrollContainerRef.current)) return;
+      setActivePopover(null);
+      setActiveFolderGradePopover(null);
+      setActivePlatePreview(null);
       setFocusedGradeCell(null);
       setActiveDatePopover({ studentId, folderId, rect });
     },
@@ -722,6 +746,10 @@ export function GradeTable({
 
   const handleOpenFolderGrade = useCallback(
     (studentId: string, folderId: string, rect: DOMRect) => {
+      if (isAppWorkspacePinching(scrollContainerRef.current)) return;
+      setActivePopover(null);
+      setActiveDatePopover(null);
+      setActivePlatePreview(null);
       setFocusedGradeCell(null);
       setActiveFolderGradePopover({ studentId, folderId, rect });
     },
@@ -730,6 +758,10 @@ export function GradeTable({
 
   const handleOpenFolderDetail = useCallback(
     (studentId: string, folder: FolderDelivery) => {
+      if (isAppWorkspacePinching(scrollContainerRef.current)) return;
+      setActivePopover(null);
+      setActiveDatePopover(null);
+      setActiveFolderGradePopover(null);
       setFocusedGradeCell(null);
       onOpenFolderStudent(studentId, folder);
     },
@@ -968,7 +1000,8 @@ export function GradeTable({
 
       <div
         ref={scrollContainerRef}
-        className="grade-grid-scroll min-h-0 flex-1 overflow-auto"
+        data-zoom-scroll-container="true"
+        className="grade-grid-scroll min-h-0 flex-1 overflow-auto touch-pan-x touch-pan-y"
       >
         <table className="w-max table-fixed border-separate border-spacing-0 text-left text-sm">
           <thead>
@@ -1814,16 +1847,21 @@ export function GradeTable({
               patch
             )
           }
-          onClose={() => {
+          onClose={(reason?: CellPopoverCloseReason) => {
             const closing = activePopoverData;
             setActivePopover(null);
+            if (reason === 'outside' || reason === 'cancel') {
+              setFocusedGradeCell(null);
+              return;
+            }
             if (closing?.mode === 'grade') {
               const cellKey = `${closing.student.id}::${closing.plate.id}`;
               window.requestAnimationFrame(() => {
+                if (activePopoverRef.current) return;
                 const btn = scrollContainerRef.current?.querySelector(
                   `[data-grade-cell="${cellKey}"]`
                 ) as HTMLElement | null;
-                btn?.focus();
+                btn?.focus({ preventScroll: true });
               });
             }
           }}

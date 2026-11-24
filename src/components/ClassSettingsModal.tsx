@@ -28,6 +28,7 @@ export type SettingsTab = 'valutazione' | 'drive';
 export interface DriveSettingsViewProps {
   account: GoogleDriveAccount | null;
   hasValidToken: boolean;
+  isAuthConfigured: boolean;
   syncMeta: DriveSyncMetadata;
   status: DriveSyncStatus;
   hasPendingChanges: boolean;
@@ -375,7 +376,11 @@ export function ClassSettingsModal({
                   </p>
                   <button
                     type="button"
-                    disabled={busyDrive || !driveSync.isOnline}
+                    disabled={
+                      busyDrive ||
+                      !driveSync.isOnline ||
+                      !driveSync.isAuthConfigured
+                    }
                     onClick={driveSync.onConnect}
                     className="gsi-material-button"
                     aria-label="Accedi con Google per sincronizzare Google Drive"
@@ -413,6 +418,20 @@ export function ClassSettingsModal({
                       </span>
                     </div>
                   </button>
+                  {!driveSync.isAuthConfigured && (
+                    <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-relaxed text-amber-900">
+                      <p className="font-semibold">
+                        Configurazione OAuth 2.0 richiesta per Google Drive
+                      </p>
+                      <p className="mt-0.5">
+                        Per attivare la sincronizzazione cloud senza alcuna API key, configura il tuo <strong>OAuth 2.0 Client ID</strong> pubblico nella variabile{' '}
+                        <code className="rounded bg-amber-100 px-1 py-0.5 font-mono text-[10px]">
+                          VITE_GOOGLE_OAUTH_CLIENT_ID
+                        </code>{' '}
+                        e autorizza l’origine del sito in Google Cloud Console. Tutte le altre funzioni di TabScore (registro, statistiche, PWA offline e backup locale) continuano a funzionare normalmente.
+                      </p>
+                    </div>
+                  )}
                   {!driveSync.isOnline && (
                     <p className="text-[11px] font-medium text-amber-800">
                       Connessione Internet non disponibile: collegati alla rete per accedere a Google Drive.

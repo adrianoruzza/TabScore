@@ -1,5 +1,5 @@
 import { Minus, Plus, RotateCcw, Search } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type RefObject } from 'react';
 import {
   APP_ZOOM_DEFAULT,
   APP_ZOOM_MAX,
@@ -11,6 +11,7 @@ interface ZoomControlsProps {
   zoom: number;
   zoomPercent: number;
   isDefaultZoom: boolean;
+  toolbarPercentRef?: RefObject<HTMLSpanElement | null>;
   onSetZoom: (nextZoom: number) => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
@@ -21,6 +22,7 @@ export function ZoomControls({
   zoom,
   zoomPercent,
   isDefaultZoom,
+  toolbarPercentRef,
   onSetZoom,
   onZoomIn,
   onZoomOut,
@@ -31,7 +33,7 @@ export function ZoomControls({
 
   useEffect(() => {
     if (!open) return;
-    const handleOutside = (e: MouseEvent) => {
+    const handleOutside = (e: PointerEvent) => {
       if (
         containerRef.current &&
         !containerRef.current.contains(e.target as Node)
@@ -42,10 +44,10 @@ export function ZoomControls({
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setOpen(false);
     };
-    document.addEventListener('mousedown', handleOutside);
+    document.addEventListener('pointerdown', handleOutside);
     window.addEventListener('keydown', handleKey);
     return () => {
-      document.removeEventListener('mousedown', handleOutside);
+      document.removeEventListener('pointerdown', handleOutside);
       window.removeEventListener('keydown', handleKey);
     };
   }, [open]);
@@ -65,7 +67,7 @@ export function ZoomControls({
         }`}
       >
         <Search className="h-3.5 w-3.5 shrink-0 opacity-75" />
-        <span>{zoomPercent}%</span>
+        <span ref={toolbarPercentRef}>{zoomPercent}%</span>
       </button>
 
       {open && (
@@ -162,17 +164,24 @@ export function ZoomControls({
 export function ZoomToastBadge({
   zoomPercent,
   visible,
+  containerRef,
+  textRef,
 }: {
   zoomPercent: number;
   visible: boolean;
+  containerRef?: RefObject<HTMLDivElement | null>;
+  textRef?: RefObject<HTMLSpanElement | null>;
 }) {
-  if (!visible) return null;
   return (
     <div
+      ref={containerRef}
       aria-live="polite"
-      className="pointer-events-none fixed right-4 bottom-4 z-40 rounded-md border border-slate-700/80 bg-slate-900/90 px-2.5 py-1 font-mono text-xs font-semibold tabular-nums text-white shadow-lg"
+      aria-hidden={!visible}
+      className={`pointer-events-none fixed right-4 bottom-4 z-40 rounded-md border border-slate-700/80 bg-slate-900/90 px-2.5 py-1 font-mono text-xs font-semibold tabular-nums text-white shadow-lg transition-opacity duration-150 ${
+        visible ? 'opacity-100' : 'opacity-0'
+      }`}
     >
-      Zoom {zoomPercent}%
+      <span ref={textRef}>Zoom {zoomPercent}%</span>
     </div>
   );
 }
