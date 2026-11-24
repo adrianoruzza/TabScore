@@ -36,6 +36,7 @@ import type {
 } from '../types/gradebook';
 import {
   calculateFolderEvaluation,
+  computeFolderDeliveryCounts,
   EMPTY_EVALUATION,
   EMPTY_FOLDER_RECORD,
   formatDecimalIt,
@@ -45,6 +46,7 @@ import {
   hasValidDeliveryDate,
   sortPlates,
   STATUS_META,
+  type FolderDeliveryCounts,
 } from '../utils/calculations';
 import { getClassColorOption } from '../utils/classColors';
 import {
@@ -516,6 +518,17 @@ export function GradeTable({
         );
       }
       byFolder.set(folder.id, buildFolderDeliveryDateColorMap(dates));
+    }
+    return byFolder;
+  }, [classData.folders, classData.students, classData.folderRecords]);
+
+  const folderDeliveryCountsMap = useMemo(() => {
+    const byFolder = new Map<string, FolderDeliveryCounts>();
+    for (const folder of classData.folders) {
+      byFolder.set(
+        folder.id,
+        computeFolderDeliveryCounts(classData, folder.id)
+      );
     }
     return byFolder;
   }, [classData.folders, classData.students, classData.folderRecords]);
@@ -1260,6 +1273,11 @@ export function GradeTable({
                   classData.plates
                 );
                 const isCollapsed = collapsedFolderSet.has(f.id);
+                const deliveryCounts = folderDeliveryCountsMap.get(f.id) ?? {
+                  delivered: 0,
+                  missing: classData.students.length,
+                  total: classData.students.length,
+                };
 
                 return (
                   <th
@@ -1337,6 +1355,39 @@ export function GradeTable({
                               ? formatShortMonthDateIt(f.dueDate)
                               : '—'}
                           </strong>
+                        </div>
+                        <div
+                          data-folder-delivery-summary={f.id}
+                          title={`Consegnata: ${deliveryCounts.delivered} · Mancanti: ${deliveryCounts.missing} (su ${deliveryCounts.total} studenti)`}
+                          className="flex flex-wrap items-center gap-x-1 rounded border border-blue-200/80 bg-white/80 px-1.5 py-0.5 text-[10px] leading-tight text-blue-950"
+                        >
+                          <span className="whitespace-nowrap">
+                            Consegnata:{' '}
+                            <strong
+                              className={`font-mono tabular-nums ${
+                                deliveryCounts.delivered > 0
+                                  ? 'text-emerald-700'
+                                  : 'text-slate-600'
+                              }`}
+                            >
+                              {deliveryCounts.delivered}
+                            </strong>
+                          </span>
+                          <span className="text-blue-300" aria-hidden="true">
+                            |
+                          </span>
+                          <span className="whitespace-nowrap">
+                            Mancanti:{' '}
+                            <strong
+                              className={`font-mono tabular-nums ${
+                                deliveryCounts.missing > 0
+                                  ? 'text-amber-700'
+                                  : 'text-slate-600'
+                              }`}
+                            >
+                              {deliveryCounts.missing}
+                            </strong>
+                          </span>
                         </div>
                         <button
                           type="button"

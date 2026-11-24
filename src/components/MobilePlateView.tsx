@@ -24,6 +24,7 @@ import type {
 } from '../types/gradebook';
 import {
   calculateFolderEvaluation,
+  computeFolderDeliveryCounts,
   EMPTY_EVALUATION,
   EMPTY_FOLDER_RECORD,
   FOLDER_STATUS_META,
@@ -253,6 +254,53 @@ export function MobilePlateView({
               )}
             </button>
           )}
+          {activeFolder && (() => {
+            const deliveryCounts = computeFolderDeliveryCounts(
+              classData,
+              activeFolder.id
+            );
+            return (
+              <div
+                data-folder-delivery-summary={activeFolder.id}
+                className="flex w-full items-center justify-between gap-2 rounded border border-blue-200 bg-blue-50/70 px-2.5 py-1.5 text-xs text-blue-950"
+              >
+                <span className="truncate font-medium text-blue-900">
+                  {activeFolder.dueDate
+                    ? `Prev. ${formatShortMonthDateIt(activeFolder.dueDate)}`
+                    : activeFolder.title}
+                </span>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <span className="whitespace-nowrap">
+                    Consegnata:{' '}
+                    <strong
+                      className={`font-mono tabular-nums ${
+                        deliveryCounts.delivered > 0
+                          ? 'text-emerald-700'
+                          : 'text-slate-600'
+                      }`}
+                    >
+                      {deliveryCounts.delivered}
+                    </strong>
+                  </span>
+                  <span className="text-blue-300" aria-hidden="true">
+                    |
+                  </span>
+                  <span className="whitespace-nowrap">
+                    Mancanti:{' '}
+                    <strong
+                      className={`font-mono tabular-nums ${
+                        deliveryCounts.missing > 0
+                          ? 'text-amber-700'
+                          : 'text-slate-600'
+                      }`}
+                    >
+                      {deliveryCounts.missing}
+                    </strong>
+                  </span>
+                </div>
+              </div>
+            );
+          })()}
           {activeFolder && onOpenFolderStats && (
             <button
               type="button"

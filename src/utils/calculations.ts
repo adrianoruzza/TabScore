@@ -936,3 +936,36 @@ export function computeFolderClassStats(
   };
 }
 
+export interface FolderDeliveryCounts {
+  delivered: number;
+  missing: number;
+  total: number;
+}
+
+/**
+ * Counts how many students in the current class have delivered the given folder
+ * (`consegnata` or `consegnata_ritardo`) vs. how many have not yet delivered it
+ * (`da_consegnare` or `non_consegnata`, including students without a record).
+ * Derived exclusively from existing `students` and `folderRecords` state.
+ */
+export function computeFolderDeliveryCounts(
+  classData: Pick<ClassData, 'students' | 'folderRecords'>,
+  folderId: string
+): FolderDeliveryCounts {
+  let delivered = 0;
+  let missing = 0;
+  for (const stu of classData.students) {
+    const rec =
+      classData.folderRecords[stu.id]?.[folderId] ?? EMPTY_FOLDER_RECORD;
+    if (rec.status === 'consegnata' || rec.status === 'consegnata_ritardo') {
+      delivered += 1;
+    } else {
+      missing += 1;
+    }
+  }
+  return {
+    delivered,
+    missing,
+    total: classData.students.length,
+  };
+}
