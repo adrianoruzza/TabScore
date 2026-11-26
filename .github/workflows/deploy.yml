@@ -35,8 +35,7 @@ jobs:
 
       - name: Build TabScore
         env:
-          VITE_BASE_PATH: ${{ steps.pages.outputs.base_path }}
-          VITE_GOOGLE_OAUTH_CLIENT_ID: ${{ vars.VITE_GOOGLE_OAUTH_CLIENT_ID }}
+          VITE_BASE_PATH: ${{ steps.pages.outputs.base_path || '/TabScore/' }}
         run: npm run build
 
       - name: Upload Pages artifact

@@ -21,7 +21,7 @@ const MAX_DIMENSION_PX = 1400;
 const RAW_PASSTHROUGH_MAX_BYTES = 180_000;
 const TARGET_MAX_BYTES = 420_000;
 
-// Limite cautelativo per mantenere l'archivio compatibile con la quota localStorage (~5 MB)
+// Limite cautelativo per mantenere leggeri l'archivio locale (IndexedDB) e i backup JSON
 export const MAX_PDF_BYTES = 2_500_000;
 
 export function isSupportedPlateImageFile(file: File): boolean {

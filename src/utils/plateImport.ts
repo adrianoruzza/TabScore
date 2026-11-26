@@ -927,11 +927,24 @@ export async function parsePlateImportFile(
   if (file.size === 0) {
     return { ok: false, error: 'Il file selezionato è vuoto.' };
   }
+  const MAX_IMPORT_FILE_BYTES = 10 * 1024 * 1024;
+  if (file.size > MAX_IMPORT_FILE_BYTES) {
+    return {
+      ok: false,
+      error: 'Il file supera il limite di sicurezza di 10 MB per l\'importazione locale.',
+    };
+  }
 
   try {
     if (ext === 'xlsx' || ext === 'xls') {
       const buffer = await file.arrayBuffer();
-      const workbook = XLSX.read(buffer, { type: 'array' });
+      const workbook = XLSX.read(buffer, {
+        type: 'array',
+        sheetRows: 5000,
+        cellFormula: false,
+        cellHTML: false,
+        cellStyles: false,
+      });
       if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
         return {
           ok: false,

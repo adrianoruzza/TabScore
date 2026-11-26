@@ -130,7 +130,7 @@ function buildOverflowPastelColor(overflowIndex: number): DeliveryDateColor {
  * - Tutte le celle con la stessa data normalizzata ricevono esattamente lo stesso colore.
  * - Tutte le date distinte presenti nella cartellina ricevono colori differenti.
  * - La corrispondenza è deterministica: date uguali mantengono lo stesso colore
- *   dopo riapertura, aggiornamenti, ripristino backup e sincronizzazione Google Drive.
+ *   dopo riapertura, aggiornamenti e ripristino di un backup locale.
  */
 export function buildFolderDeliveryDateColorMap(
   rawDates: Iterable<string | null | undefined>

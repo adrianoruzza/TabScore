@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   ArchivedStudentHistory,
   AuditCategory,
@@ -29,6 +29,13 @@ import {
 } from '../utils/calculations';
 import { pickNextDistinctClassColorId } from '../utils/classColors';
 import {
+  hydrateLocalArchive,
+  isIndexedDbAvailable,
+  persistArchiveLocally,
+  requestPersistentStorageBestEffort,
+  type PersistenceEngine,
+} from '../utils/localDatabase';
+import {
   buildStudentDedupeKey,
   normalizeNameValue,
   sortStudentsAlphabeticallyIt,
@@ -40,7 +47,6 @@ import {
   normalizeClassData,
   saveStoreState,
   sortAndNormalizeClasses,
-  STORE_VERSION,
 } from '../utils/storage';
 
 function makeLog(
@@ -60,8 +66,6 @@ function makeLog(
     details,
   };
 }
-
-export type StoreMutationSource = 'init' | 'user' | 'cloud_restore';
 
 export type PlateImportMode = 'append' | 'replace';
 
@@ -1036,18 +1040,75 @@ export function applyReorderClasses(
 export function useGradebookStore() {
   const [storeRecord, setStoreRecord] = useState<{
     state: GradebookStoreState;
-    mutationSeq: number;
-    mutationSource: StoreMutationSource;
     history: StoreHistoryState;
   }>(() => ({
     state: loadStoreState(),
-    mutationSeq: 0,
-    mutationSource: 'init',
     history: EMPTY_STORE_HISTORY,
   }));
+  const [storageReady, setStorageReady] = useState<boolean>(
+    () => !isIndexedDbAvailable()
+  );
+  const [storageEngine, setStorageEngine] = useState<PersistenceEngine>(() =>
+    isIndexedDbAvailable() ? 'indexeddb' : 'localstorage'
+  );
+  const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
+  const [storageError, setStorageError] = useState<string | null>(null);
+
   const state = storeRecord.state;
   const stateRef = useRef(state);
   stateRef.current = state;
+  const hasUserMutatedRef = useRef(false);
+  const persistQueueRef = useRef<Promise<void>>(Promise.resolve());
+
+  const enqueuePersist = useCallback((nextState: GradebookStoreState) => {
+    persistQueueRef.current = persistQueueRef.current
+      .then(async () => {
+        const res = await persistArchiveLocally(nextState);
+        if (res.ok) {
+          setStorageEngine(res.engine);
+          setLastSavedAt(res.savedAt);
+          setStorageError(null);
+        } else if (res.error) {
+          setStorageError(res.error);
+        }
+      })
+      .catch(() => {
+        setStorageError(
+          'Errore durante il salvataggio locale dei dati sul dispositivo.'
+        );
+      });
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void requestPersistentStorageBestEffort();
+    void hydrateLocalArchive()
+      .then((res) => {
+        if (!active) return;
+        setStorageEngine(res.engine);
+        if (res.savedAt) {
+          setLastSavedAt(res.savedAt);
+        }
+        if (!hasUserMutatedRef.current) {
+          stateRef.current = res.state;
+          setStoreRecord({
+            state: res.state,
+            history: EMPTY_STORE_HISTORY,
+          });
+        }
+        setStorageReady(true);
+      })
+      .catch(() => {
+        if (!active) return;
+        setStorageReady(true);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const clearStorageError = useCallback(() => setStorageError(null), []);
 
   const commit = useCallback(
     (
@@ -1059,6 +1120,7 @@ export function useGradebookStore() {
       }
     ) => {
       const recordHistory = options?.recordHistory !== false;
+      hasUserMutatedRef.current = true;
       setStoreRecord((prev) => {
         const rawNext = updater(prev.state);
         if (rawNext === prev.state) return prev;
@@ -1066,7 +1128,7 @@ export function useGradebookStore() {
           rawNext.auditLog.length > 500
             ? { ...rawNext, auditLog: rawNext.auditLog.slice(0, 500) }
             : rawNext;
-        saveStoreState(next);
+        enqueuePersist(next);
         stateRef.current = next;
         const nextHistory = recordHistory
           ? pushHistoryEntry(prev.history, prev.state, next, {
@@ -1076,44 +1138,40 @@ export function useGradebookStore() {
           : prev.history;
         return {
           state: next,
-          mutationSeq: prev.mutationSeq + 1,
-          mutationSource: 'user',
           history: nextHistory,
         };
       });
     },
-    []
+    [enqueuePersist]
   );
 
   const undo = useCallback(() => {
+    hasUserMutatedRef.current = true;
     setStoreRecord((prev) => {
       const result = applyUndoHistory(prev.state, prev.history);
       if (!result) return prev;
-      saveStoreState(result.state);
+      enqueuePersist(result.state);
       stateRef.current = result.state;
       return {
         state: result.state,
-        mutationSeq: prev.mutationSeq + 1,
-        mutationSource: 'user',
         history: result.history,
       };
     });
-  }, []);
+  }, [enqueuePersist]);
 
   const redo = useCallback(() => {
+    hasUserMutatedRef.current = true;
     setStoreRecord((prev) => {
       const result = applyRedoHistory(prev.state, prev.history);
       if (!result) return prev;
-      saveStoreState(result.state);
+      enqueuePersist(result.state);
       stateRef.current = result.state;
       return {
         state: result.state,
-        mutationSeq: prev.mutationSeq + 1,
-        mutationSource: 'user',
         history: result.history,
       };
     });
-  }, []);
+  }, [enqueuePersist]);
 
   const canUndo = storeRecord.history.past.length > 0;
   const canRedo = storeRecord.history.future.length > 0;
@@ -1919,20 +1977,23 @@ export function useGradebookStore() {
         ].slice(0, 500),
       };
 
-      const savedOk = saveStoreState(nextState);
-      if (!savedOk) return false;
+      hasUserMutatedRef.current = true;
+      if (isIndexedDbAvailable()) {
+        enqueuePersist(nextState);
+      } else {
+        const savedOk = saveStoreState(nextState);
+        if (!savedOk) return false;
+      }
       stateRef.current = nextState;
       setStoreRecord((prev) => ({
         state: nextState,
-        mutationSeq: prev.mutationSeq + 1,
-        mutationSource: 'user',
         history: pushHistoryEntry(prev.history, prev.state, nextState, {
           label: actionLabel,
         }),
       }));
       return true;
     },
-    []
+    [enqueuePersist]
   );
 
   const importPlatesFromClass = useCallback(
@@ -1952,26 +2013,29 @@ export function useGradebookStore() {
       if (!result.ok) {
         return result;
       }
-      const savedOk = saveStoreState(nextState);
-      if (!savedOk) {
-        return {
-          ok: false,
-          importedCount: 0,
-          skippedCount: 0,
-          error:
-            'Spazio locale insufficiente per copiare anche gli allegati. Riprova importando solo la struttura delle tavole.',
-        };
+      hasUserMutatedRef.current = true;
+      if (isIndexedDbAvailable()) {
+        enqueuePersist(nextState);
+      } else {
+        const savedOk = saveStoreState(nextState);
+        if (!savedOk) {
+          return {
+            ok: false,
+            importedCount: 0,
+            skippedCount: 0,
+            error:
+              'Spazio locale insufficiente per copiare anche gli allegati. Riprova importando solo la struttura delle tavole.',
+          };
+        }
       }
       stateRef.current = nextState;
       setStoreRecord((prev) => ({
         state: nextState,
-        mutationSeq: prev.mutationSeq + 1,
-        mutationSource: 'user',
         history: pushHistoryEntry(prev.history, prev.state, nextState),
       }));
       return result;
     },
-    []
+    [enqueuePersist]
   );
 
   const importPlatesFromFile = useCallback(
@@ -1991,26 +2055,29 @@ export function useGradebookStore() {
       if (!result.ok) {
         return result;
       }
-      const savedOk = saveStoreState(nextState);
-      if (!savedOk) {
-        return {
-          ok: false,
-          importedCount: 0,
-          skippedCount: 0,
-          error:
-            'Spazio locale insufficiente per salvare le tavole importate.',
-        };
+      hasUserMutatedRef.current = true;
+      if (isIndexedDbAvailable()) {
+        enqueuePersist(nextState);
+      } else {
+        const savedOk = saveStoreState(nextState);
+        if (!savedOk) {
+          return {
+            ok: false,
+            importedCount: 0,
+            skippedCount: 0,
+            error:
+              'Spazio locale insufficiente per salvare le tavole importate.',
+          };
+        }
       }
       stateRef.current = nextState;
       setStoreRecord((prev) => ({
         state: nextState,
-        mutationSeq: prev.mutationSeq + 1,
-        mutationSource: 'user',
         history: pushHistoryEntry(prev.history, prev.state, nextState),
       }));
       return result;
     },
-    []
+    [enqueuePersist]
   );
 
   const reorderPlate = useCallback(
@@ -2726,60 +2793,6 @@ export function useGradebookStore() {
     [commit]
   );
 
-  const restoreFromCloudArchive = useCallback(
-    (
-      payload: {
-        version?: number;
-        activeClassId: string | null;
-        classes: ClassData[];
-        auditLog?: AuditLogEntry[];
-      },
-      sourceLabel = 'Google Drive'
-    ): GradebookStoreState => {
-      const normalizedClasses = sortAndNormalizeClasses(payload.classes);
-      const restoredActiveId =
-        payload.activeClassId &&
-        normalizedClasses.some((c) => c.id === payload.activeClassId)
-          ? payload.activeClassId
-          : normalizedClasses[0]?.id ?? null;
-
-      const isCloudRestore = sourceLabel === 'Google Drive';
-      const baseLogs = Array.isArray(payload.auditLog) ? payload.auditLog : [];
-      const nextState: GradebookStoreState = {
-        version: payload.version ?? STORE_VERSION,
-        activeClassId: restoredActiveId,
-        classes: normalizedClasses,
-        auditLog: isCloudRestore
-          ? baseLogs.slice(0, 500)
-          : [
-              makeLog(
-                null,
-                'Archivio completo',
-                'archivio',
-                `Ripristino da ${sourceLabel}`,
-                `Ripristinate ${normalizedClasses.length} classi complete di valutazioni, immagini e cartelline da ${sourceLabel}.`
-              ),
-              ...baseLogs,
-            ].slice(0, 500),
-      };
-
-      saveStoreState(nextState);
-      stateRef.current = nextState;
-      setStoreRecord((prev) => ({
-        state: nextState,
-        mutationSeq: isCloudRestore ? prev.mutationSeq : prev.mutationSeq + 1,
-        mutationSource: isCloudRestore ? 'cloud_restore' : 'user',
-        history: isCloudRestore
-          ? EMPTY_STORE_HISTORY
-          : pushHistoryEntry(prev.history, prev.state, nextState, {
-              label: `Ripristino da ${sourceLabel}`,
-            }),
-      }));
-      return nextState;
-    },
-    []
-  );
-
   const recordAuditAction = useCallback(
     (
       classId: string | null,
@@ -2804,8 +2817,11 @@ export function useGradebookStore() {
 
   return {
     state,
-    mutationSeq: storeRecord.mutationSeq,
-    mutationSource: storeRecord.mutationSource,
+    storageReady,
+    storageEngine,
+    lastSavedAt,
+    storageError,
+    clearStorageError,
     activeClass,
     undo,
     redo,
@@ -2844,7 +2860,6 @@ export function useGradebookStore() {
     updateClassSettings,
     importSingleClass,
     importFullBackup,
-    restoreFromCloudArchive,
     recordAuditAction,
   };
 }

@@ -311,6 +311,21 @@ export function loadStoreState(): GradebookStoreState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) {
+      // If IndexedDB already holds a large archive (> localStorage mirror limit),
+      // return an empty shell synchronously until async IndexedDB hydration finishes
+      // (avoiding flashing sample data or overwriting the real archive).
+      const metaRaw = localStorage.getItem('tabscore_storage_meta_v1');
+      if (metaRaw) {
+        const meta = JSON.parse(metaRaw) as { engine?: string };
+        if (meta?.engine === 'indexeddb') {
+          return {
+            version: STORE_VERSION,
+            activeClassId: null,
+            classes: [],
+            auditLog: [],
+          };
+        }
+      }
       const seed = createInitialSeedState();
       saveStoreState(seed);
       return seed;
@@ -330,9 +345,12 @@ export function loadStoreState(): GradebookStoreState {
       auditLog: Array.isArray(parsed.auditLog) ? parsed.auditLog : [],
     };
   } catch {
-    const seed = createInitialSeedState();
-    saveStoreState(seed);
-    return seed;
+    return {
+      version: STORE_VERSION,
+      activeClassId: null,
+      classes: [],
+      auditLog: [],
+    };
   }
 }
 
@@ -340,8 +358,7 @@ export function saveStoreState(state: GradebookStoreState): boolean {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     return true;
-  } catch (err) {
-    console.error('Errore salvataggio locale:', err);
+  } catch {
     return false;
   }
 }
@@ -400,7 +417,7 @@ export function buildTimestampedBackupFileName(date: Date = new Date()): string 
   const hh = pad(date.getHours());
   const min = pad(date.getMinutes());
   const ss = pad(date.getSeconds());
-  return `backup_completo_tabscore_${yyyy}-${mm}-${dd}_${hh}-${min}-${ss}.json`;
+  return `BACKUP_TabScore_${yyyy}-${mm}-${dd}_${hh}-${min}-${ss}.json`;
 }
 
 export function exportFullBackupJson(state: GradebookStoreState): void {
@@ -409,38 +426,145 @@ export function exportFullBackupJson(state: GradebookStoreState): void {
   triggerJsonDownload(buildTimestampedBackupFileName(now), backup);
 }
 
+const UNSAFE_JSON_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+function sanitizeParsedJson<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeParsedJson(item)) as unknown as T;
+  }
+  if (value && typeof value === 'object') {
+    const clean: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (UNSAFE_JSON_KEYS.has(k)) continue;
+      clean[k] = sanitizeParsedJson(v);
+    }
+    return clean as T;
+  }
+  return value;
+}
+
+function isSafeAttachmentDataUrl(value: unknown): boolean {
+  if (value === undefined || value === null || value === '') return true;
+  if (typeof value !== 'string') return false;
+  return (
+    /^data:image\/(png|jpeg|jpg|webp|gif);base64,/i.test(value) ||
+    /^data:application\/pdf;base64,/i.test(value)
+  );
+}
+
+function validateClassStructure(cls: unknown): cls is ClassData {
+  if (!cls || typeof cls !== 'object') return false;
+  const c = cls as Partial<ClassData>;
+  if (typeof c.id !== 'string' || !c.id.trim()) return false;
+  if (typeof c.name !== 'string' || !c.name.trim()) return false;
+  if (!Array.isArray(c.students) || !Array.isArray(c.plates)) return false;
+  if (c.folders !== undefined && !Array.isArray(c.folders)) return false;
+  if (
+    c.evaluations !== undefined &&
+    (typeof c.evaluations !== 'object' || c.evaluations === null || Array.isArray(c.evaluations))
+  ) {
+    return false;
+  }
+  if (
+    c.folderRecords !== undefined &&
+    (typeof c.folderRecords !== 'object' || c.folderRecords === null || Array.isArray(c.folderRecords))
+  ) {
+    return false;
+  }
+
+  for (const stu of c.students) {
+    if (!stu || typeof stu !== 'object' || typeof stu.id !== 'string') {
+      return false;
+    }
+  }
+  for (const plate of c.plates) {
+    if (!plate || typeof plate !== 'object' || typeof plate.id !== 'string') {
+      return false;
+    }
+    if (!isSafeAttachmentDataUrl(plate.imageDataUrl)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export function validateImportedArchive(
   rawJson: unknown
 ):
   | { ok: true; kind: 'single_class'; archive: SingleClassArchive }
   | { ok: true; kind: 'full_backup'; archive: FullBackupArchive }
   | { ok: false; error: string } {
-  if (!rawJson || typeof rawJson !== 'object') {
+  if (!rawJson || typeof rawJson !== 'object' || Array.isArray(rawJson)) {
     return { ok: false, error: 'Il file selezionato non contiene un oggetto JSON valido.' };
   }
-  const obj = rawJson as Record<string, unknown>;
+  const obj = sanitizeParsedJson(rawJson as Record<string, unknown>);
+
+  if (
+    obj.version !== undefined &&
+    (typeof obj.version !== 'number' ||
+      !Number.isInteger(obj.version) ||
+      obj.version < 1 ||
+      obj.version > STORE_VERSION)
+  ) {
+    return {
+      ok: false,
+      error: `Versione archivio non compatibile (trovata v${String(obj.version)}, supportata fino a v${STORE_VERSION}).`,
+    };
+  }
 
   if (obj.archiveType === 'single_class' && obj.classData && typeof obj.classData === 'object') {
-    const cls = obj.classData as ClassData;
-    if (!cls.id || !cls.name || !Array.isArray(cls.students) || !Array.isArray(cls.plates)) {
-      return { ok: false, error: 'Archivio classe incompleto: mancano studenti o tavole.' };
+    if (!validateClassStructure(obj.classData)) {
+      return {
+        ok: false,
+        error: 'Archivio classe incompleto o danneggiato: controlla studenti, tavole e allegati.',
+      };
     }
-    return { ok: true, kind: 'single_class', archive: obj as unknown as SingleClassArchive };
+    const cls = obj.classData;
+    const normalizedArchive: SingleClassArchive = {
+      archiveType: 'single_class',
+      version: typeof obj.version === 'number' ? obj.version : STORE_VERSION,
+      exportedAt: typeof obj.exportedAt === 'string' ? obj.exportedAt : new Date().toISOString(),
+      classData: {
+        ...cls,
+        folders: Array.isArray(cls.folders) ? cls.folders : [],
+        evaluations: cls.evaluations ?? {},
+        folderRecords: cls.folderRecords ?? {},
+      },
+      classAuditLog: Array.isArray(obj.classAuditLog)
+        ? (obj.classAuditLog as AuditLogEntry[])
+        : [],
+    };
+    return { ok: true, kind: 'single_class', archive: normalizedArchive };
   }
 
   if (obj.archiveType === 'full_backup' && Array.isArray(obj.classes)) {
-    const validClasses = (obj.classes as ClassData[]).every(
-      (c) => c && typeof c.id === 'string' && typeof c.name === 'string' && Array.isArray(c.students)
-    );
+    const validClasses = obj.classes.every((c) => validateClassStructure(c));
     if (!validClasses) {
-      return { ok: false, error: 'Il backup completo contiene una o più classi non valide.' };
+      return {
+        ok: false,
+        error: 'Il backup completo contiene una o più classi non valide o danneggiate.',
+      };
     }
-    return { ok: true, kind: 'full_backup', archive: obj as unknown as FullBackupArchive };
+    const normalizedArchive: FullBackupArchive = {
+      archiveType: 'full_backup',
+      version: typeof obj.version === 'number' ? obj.version : STORE_VERSION,
+      exportedAt: typeof obj.exportedAt === 'string' ? obj.exportedAt : new Date().toISOString(),
+      classes: (obj.classes as ClassData[]).map((cls) => ({
+        ...cls,
+        folders: Array.isArray(cls.folders) ? cls.folders : [],
+        evaluations: cls.evaluations ?? {},
+        folderRecords: cls.folderRecords ?? {},
+      })),
+      auditLog: Array.isArray(obj.auditLog)
+        ? (obj.auditLog as AuditLogEntry[])
+        : [],
+    };
+    return { ok: true, kind: 'full_backup', archive: normalizedArchive };
   }
 
   return {
     ok: false,
-    error: 'Formato archivio non riconosciuto. Selezionare un file esportato da TabScore.',
+    error: 'Formato archivio non riconosciuto. Selezionare un file JSON esportato da TabScore.',
   };
 }
 

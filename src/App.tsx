@@ -1,22 +1,19 @@
 import {
+  AlertTriangle,
   Plus,
   Redo2,
   Settings,
   Undo2,
+  X,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ArchiveModal } from './components/ArchiveModal';
 import { AuditLogDrawer } from './components/AuditLogDrawer';
 import { ClassManagerModal } from './components/ClassManagerModal';
-import {
-  ClassSettingsModal,
-  type SettingsTab,
-} from './components/ClassSettingsModal';
+import { ClassSettingsModal } from './components/ClassSettingsModal';
 import { ClassStatsModal } from './components/ClassStatsModal';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { DataDashboardView } from './components/data-dashboard/DataDashboardView';
-import { DriveSyncDialogs } from './components/DriveSyncDialogs';
-import { DriveSyncIndicatorButton } from './components/DriveSyncIndicatorButton';
 import { FolderClassStatsModal } from './components/FolderClassStatsModal';
 import { FolderConfigModal } from './components/FolderConfigModal';
 import { FolderDrawer } from './components/FolderDrawer';
@@ -28,7 +25,6 @@ import { StudentModal } from './components/StudentModal';
 import { StudentStatsModal } from './components/StudentStatsModal';
 import { ZoomControls, ZoomToastBadge } from './components/ZoomControls';
 import { useAppZoom } from './hooks/useAppZoom';
-import { useGoogleDriveSync } from './hooks/useGoogleDriveSync';
 import { useGradebookStore } from './hooks/useGradebookStore';
 import { usePWAStatus } from './hooks/usePWAStatus';
 import type {
@@ -40,7 +36,6 @@ import type {
 } from './types/gradebook';
 import { OFFICIAL_TABSCORE_ICON } from './utils/appAssets';
 import { getClassColorOption } from './utils/classColors';
-import { exportFullBackupJson } from './utils/storage';
 
 type ConfirmTarget =
   | { kind: 'class'; cls: ClassData }
@@ -73,8 +68,6 @@ export default function App() {
   // Modals & Drawers
   const [classManagerOpen, setClassManagerOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsInitialTab, setSettingsInitialTab] =
-    useState<SettingsTab>('valutazione');
   const [statsOpen, setStatsOpen] = useState(false);
   const [studentStatsId, setStudentStatsId] = useState<string | null>(null);
   const [folderStatsId, setFolderStatsId] = useState<string | null>(null);
@@ -108,14 +101,6 @@ export default function App() {
 
   const [confirmTarget, setConfirmTarget] = useState<ConfirmTarget | null>(null);
 
-  const dataFingerprint = useMemo(
-    () =>
-      `${state.activeClassId ?? ''}|${state.classes
-        .map((c) => `${c.id}:${c.updatedAt}`)
-        .join(',')}|${state.auditLog[0]?.id ?? ''}`,
-    [state]
-  );
-
   const isEditingBusy = Boolean(
     studentModal.open ||
       plateModal.open ||
@@ -126,14 +111,7 @@ export default function App() {
       confirmTarget
   );
 
-  const pwa = usePWAStatus(dataFingerprint, isEditingBusy);
-
-  const driveSync = useGoogleDriveSync({
-    storeState: state,
-    mutationSeq: store.mutationSeq,
-    mutationSource: store.mutationSource,
-    onRestoreState: store.restoreFromCloudArchive,
-  });
+  const pwa = usePWAStatus(isEditingBusy);
 
   // Global keyboard shortcuts for Undo (Ctrl/Cmd+Z) and Redo (Ctrl/Cmd+Y, Ctrl/Cmd+Shift+Z)
   const isUndoShortcutBlocked = Boolean(
@@ -143,8 +121,7 @@ export default function App() {
       settingsOpen ||
       classManagerOpen ||
       archiveOpen ||
-      confirmTarget ||
-      driveSync.pendingDialog
+      confirmTarget
   );
 
   useEffect(() => {
@@ -195,13 +172,9 @@ export default function App() {
     store.redo,
   ]);
 
-  const openSettingsModal = useCallback(
-    (tab?: SettingsTab) => {
-      setSettingsInitialTab(tab ?? (activeClass ? 'valutazione' : 'drive'));
-      setSettingsOpen(true);
-    },
-    [activeClass]
-  );
+  const openSettingsModal = useCallback(() => {
+    setSettingsOpen(true);
+  }, []);
 
   const activeClassId = activeClass?.id ?? null;
   const activeClassColor = useMemo(
@@ -613,14 +586,6 @@ export default function App() {
             onResetZoom={appZoom.resetZoom}
           />
 
-          <DriveSyncIndicatorButton
-            account={driveSync.account}
-            status={driveSync.status}
-            isOnline={driveSync.isOnline}
-            isSyncing={driveSync.isSyncing}
-            hasPendingChanges={driveSync.hasPendingChanges}
-            onClick={() => openSettingsModal('drive')}
-          />
           <PWAInstallButton />
           {!activeClass && (
             <button
@@ -685,7 +650,7 @@ export default function App() {
           <button
             type="button"
             onClick={() => openSettingsModal()}
-            title="Impostazioni e sincronizzazione Google Drive"
+            title="Impostazioni valutazione"
             className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
           >
             <Settings className="h-3.5 w-3.5" />
@@ -762,6 +727,26 @@ export default function App() {
           )}
         </div>
       </section>
+
+      {store.storageError && (
+        <div
+          role="alert"
+          className="flex shrink-0 items-center justify-between gap-3 border-b border-rose-200 bg-rose-50 px-4 py-2 text-xs font-medium text-rose-900"
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            <AlertTriangle className="h-4 w-4 shrink-0 text-rose-700" />
+            <span className="truncate">{store.storageError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={store.clearStorageError}
+            aria-label="Chiudi avviso archivio locale"
+            className="rounded p-1 text-rose-700 hover:bg-rose-100"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Main Content: Dati Dashboard or Spreadsheet Table */}
       <main
@@ -880,8 +865,7 @@ export default function App() {
                       studentStatsId ||
                       folderStatsId ||
                       archiveOpen ||
-                      auditOpen ||
-                      driveSync.pendingDialog
+                      auditOpen
                   )
                 }
               />
@@ -1057,28 +1041,6 @@ export default function App() {
       <ClassSettingsModal
         open={settingsOpen}
         classData={activeClass}
-        initialTab={settingsInitialTab}
-        driveSync={{
-          account: driveSync.account,
-          hasValidToken: driveSync.hasValidToken,
-          isAuthConfigured: driveSync.isAuthConfigured,
-          syncMeta: driveSync.syncMeta,
-          status: driveSync.status,
-          hasPendingChanges: driveSync.hasPendingChanges,
-          error: driveSync.error,
-          notice: driveSync.notice,
-          isSyncing: driveSync.isSyncing,
-          isRestoring: driveSync.isRestoring,
-          isOnline: driveSync.isOnline,
-          safetyBackup: driveSync.safetyBackup,
-          onConnect: () => void driveSync.connectGoogle(false),
-          onReconnect: () => void driveSync.reconnectSession(),
-          onDisconnect: () => void driveSync.disconnectGoogle(),
-          onManualSync: () => void driveSync.requestManualSync(),
-          onRequestRestore: () => void driveSync.requestRestoreFromDrive(),
-          onRestoreSafetyBackup: driveSync.restoreFromSafetyBackup,
-          onToggleAutoSync: (enabled) => void driveSync.toggleAutoSync(enabled),
-        }}
         onSave={(settings) => {
           if (activeClass) {
             store.updateClassSettings(activeClass.id, settings);
@@ -1091,14 +1053,8 @@ export default function App() {
         open={archiveOpen}
         storeState={state}
         activeClass={activeClass}
-        driveConnected={Boolean(driveSync.account)}
-        driveAccountEmail={driveSync.account?.email ?? null}
-        isOnline={driveSync.isOnline}
-        onBackupFullToDrive={driveSync.backupFullArchiveToDrive}
-        onOpenDriveSettings={() => {
-          setArchiveOpen(false);
-          openSettingsModal('drive');
-        }}
+        storageEngine={store.storageEngine}
+        lastSavedAt={store.lastSavedAt}
         onImportSingleClass={store.importSingleClass}
         onImportFullBackup={store.importFullBackup}
         onLogExport={(action, details) =>
@@ -1130,21 +1086,9 @@ export default function App() {
         onCancel={() => setConfirmTarget(null)}
       />
 
-      <DriveSyncDialogs
-        dialog={driveSync.pendingDialog}
-        isBusy={driveSync.isSyncing || driveSync.isRestoring}
-        onPushLocalToDrive={() => void driveSync.confirmUploadLocalToDrive()}
-        onRestoreFromDrive={() => void driveSync.confirmRestoreFromDrive()}
-        onConfirmEnableAutoSync={() => void driveSync.confirmEnableAutoSync()}
-        onDownloadLocalBackup={() => exportFullBackupJson(state)}
-        onClose={driveSync.dismissPendingDialog}
-      />
-
       <PWABanners
         isOnline={pwa.isOnline}
         needRefresh={pwa.needRefresh}
-        pendingOfflineChanges={pwa.pendingOfflineChanges}
-        reconciledNotice={pwa.reconciledNotice}
         isEditingBusy={isEditingBusy}
         isUpdating={pwa.isUpdating}
         onApplyUpdate={() => void pwa.applyUpdate()}

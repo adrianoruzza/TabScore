@@ -1,4 +1,4 @@
-import { CheckCircle2, Download, RefreshCw, Share, WifiOff, X } from 'lucide-react';
+import { Download, RefreshCw, Share, WifiOff, X } from 'lucide-react';
 import { useState } from 'react';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import { OFFICIAL_TABSCORE_ICON } from '../utils/appAssets';
@@ -102,8 +102,6 @@ export function PWAInstallButton({ compact = false }: { compact?: boolean }) {
 interface PWABannersProps {
   isOnline: boolean;
   needRefresh: boolean;
-  pendingOfflineChanges: boolean;
-  reconciledNotice: string | null;
   isEditingBusy: boolean;
   isUpdating: boolean;
   onApplyUpdate: () => void;
@@ -113,8 +111,6 @@ interface PWABannersProps {
 export function PWABanners({
   isOnline,
   needRefresh,
-  pendingOfflineChanges,
-  reconciledNotice,
   isEditingBusy,
   isUpdating,
   onApplyUpdate,
@@ -122,8 +118,8 @@ export function PWABanners({
 }: PWABannersProps) {
   return (
     <>
-      {/* Offline / Reconnected Connectivity Notice */}
-      {!isOnline ? (
+      {/* Offline Connectivity Notice */}
+      {!isOnline && (
         <div
           role="status"
           aria-live="polite"
@@ -131,21 +127,9 @@ export function PWABanners({
         >
           <WifiOff className="h-3.5 w-3.5 shrink-0 text-amber-700" />
           <span className="truncate">
-            Modalità offline · Dati salvati in locale
-            {pendingOfflineChanges ? ' (allineamento al rientro)' : ''}
+            Modalità offline · Dati salvati in locale sul dispositivo
           </span>
         </div>
-      ) : (
-        reconciledNotice && (
-          <div
-            role="status"
-            aria-live="polite"
-            className="fixed bottom-3 left-3 z-40 flex max-w-[calc(100vw-24px)] items-center gap-2 rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-950 shadow-md"
-          >
-            <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-700" />
-            <span className="truncate">{reconciledNotice}</span>
-          </div>
-        )
       )}
 
       {/* Non-intrusive App Update Prompt (never forces reload during edits) */}

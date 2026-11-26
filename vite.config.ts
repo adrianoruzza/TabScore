@@ -1,52 +1,18 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
-import fs from 'fs';
 import path from 'path';
 import {defineConfig} from 'vite';
 import {VitePWA} from 'vite-plugin-pwa';
 
-function resolvePublicGoogleOAuthClientId(): string {
-  const isValidClientId = (val: unknown): val is string =>
-    typeof val === 'string' &&
-    !/^AIza/i.test(val.trim()) &&
-    /^[a-z0-9-]+\.apps\.googleusercontent\.com$/i.test(val.trim());
-
-  const fromEnv = process.env.VITE_GOOGLE_OAUTH_CLIENT_ID;
-  if (isValidClientId(fromEnv)) {
-    return fromEnv.trim();
-  }
-
-  // Strictly read ONLY the public oAuthClientId field; never read or expose apiKey.
-  for (const relPath of ['firebase-applet-config.json', 'oauth-public-config.json']) {
-    try {
-      const fullPath = path.resolve(__dirname, relPath);
-      if (!fs.existsSync(fullPath)) continue;
-      const parsed = JSON.parse(fs.readFileSync(fullPath, 'utf8')) as {
-        oAuthClientId?: unknown;
-      };
-      if (isValidClientId(parsed.oAuthClientId)) {
-        return parsed.oAuthClientId.trim();
-      }
-    } catch {
-      // Ignore missing or unreadable config files
-    }
-  }
-
-  return '';
-}
-
-export default defineConfig(() => {
-  const rawBase = process.env.VITE_BASE_PATH?.trim() || '/';
+export default defineConfig(({command}) => {
+  // Production builds default to GitHub Pages subpath (/TabScore/),
+  // while local dev server defaults to / unless VITE_BASE_PATH is explicitly set.
+  const defaultBase = command === 'build' ? '/TabScore/' : '/';
+  const rawBase = process.env.VITE_BASE_PATH?.trim() || defaultBase;
   const base = rawBase.endsWith('/') ? rawBase : `${rawBase}/`;
-  const googleOAuthClientId = resolvePublicGoogleOAuthClientId();
 
   return {
     base,
-    define: {
-      'import.meta.env.VITE_GOOGLE_OAUTH_CLIENT_ID': JSON.stringify(
-        googleOAuthClientId
-      ),
-    },
     plugins: [
       react(),
       tailwindcss(),
@@ -102,39 +68,11 @@ export default defineConfig(() => {
           cleanupOutdatedCaches: true,
           clientsClaim: true,
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
-          globPatterns: ['**/*.{js,mjs,css,html,ico,png,svg,woff,woff2,webmanifest}'],
+          globPatterns: [
+            '**/*.{js,mjs,css,html,ico,png,svg,woff,woff2,webmanifest}',
+          ],
           navigateFallback: `${base}index.html`,
           navigateFallbackDenylist: [/^\/api\//],
-          runtimeCaching: [
-            {
-              urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
-              handler: 'StaleWhileRevalidate',
-              options: {
-                cacheName: 'google-fonts-stylesheets',
-                expiration: {
-                  maxEntries: 10,
-                  maxAgeSeconds: 60 * 60 * 24 * 365,
-                },
-                cacheableResponse: {
-                  statuses: [0, 200],
-                },
-              },
-            },
-            {
-              urlPattern: /^https:\/\/fonts\.gstatic\.com\/.*/i,
-              handler: 'CacheFirst',
-              options: {
-                cacheName: 'google-fonts-webfonts',
-                expiration: {
-                  maxEntries: 20,
-                  maxAgeSeconds: 60 * 60 * 24 * 365,
-                },
-                cacheableResponse: {
-                  statuses: [0, 200],
-                },
-              },
-            },
-          ],
         },
         devOptions: {
           enabled: true,
@@ -160,3 +98,4 @@ export default defineConfig(() => {
     },
   };
 });
+

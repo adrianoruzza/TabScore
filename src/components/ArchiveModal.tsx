@@ -1,15 +1,17 @@
 import {
   CheckCircle2,
-  CloudUpload,
   Download,
   FileSpreadsheet,
+  FolderOpen,
+  HardDrive,
   HardDriveDownload,
   Loader2,
+  ShieldCheck,
+  Trash2,
   Upload,
   X,
 } from 'lucide-react';
 import { useEffect, useRef, useState, type ChangeEvent } from 'react';
-import type { DriveBackupUploadResult } from '../services/googleDriveSync';
 import type {
   ClassData,
   FullBackupArchive,
@@ -17,9 +19,20 @@ import type {
   SingleClassArchive,
 } from '../types/gradebook';
 import {
+  clearDedicatedBackupFolder,
+  getDedicatedBackupFolderName,
+  isDirectoryPickerSupported,
+  isSaveFilePickerSupported,
+  saveFullBackupLocally,
+  saveFullBackupToDedicatedFolder,
+  saveSingleClassBackupLocally,
+  selectDedicatedBackupFolder,
+  summarizeArchiveForConfirmation,
+  type ArchivePreviewSummary,
+} from '../utils/localBackup';
+import type { PersistenceEngine } from '../utils/localDatabase';
+import {
   exportClassToExcel,
-  exportFullBackupJson,
-  exportSingleClassJson,
   validateImportedArchive,
 } from '../utils/storage';
 
@@ -27,13 +40,8 @@ interface ArchiveModalProps {
   open: boolean;
   storeState: GradebookStoreState;
   activeClass: ClassData | null;
-  driveConnected: boolean;
-  driveAccountEmail?: string | null;
-  isOnline: boolean;
-  onBackupFullToDrive: () => Promise<
-    { ok: true; result: DriveBackupUploadResult } | { ok: false; error: string }
-  >;
-  onOpenDriveSettings: () => void;
+  storageEngine: PersistenceEngine;
+  lastSavedAt: string | null;
   onImportSingleClass: (
     archive: SingleClassArchive,
     mode: 'add_new' | 'replace_existing'
@@ -44,18 +52,37 @@ interface ArchiveModalProps {
 }
 
 type PendingImport =
-  | { kind: 'single_class'; archive: SingleClassArchive; alreadyExists: boolean }
-  | { kind: 'full_backup'; archive: FullBackupArchive };
+  | {
+      kind: 'single_class';
+      archive: SingleClassArchive;
+      alreadyExists: boolean;
+      summary: ArchivePreviewSummary;
+    }
+  | {
+      kind: 'full_backup';
+      archive: FullBackupArchive;
+      summary: ArchivePreviewSummary;
+    };
+
+function formatDateTimeIt(iso: string | null): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleString('it-IT', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
 
 export function ArchiveModal({
   open,
   storeState,
   activeClass,
-  driveConnected,
-  driveAccountEmail,
-  isOnline,
-  onBackupFullToDrive,
-  onOpenDriveSettings,
+  storageEngine,
+  lastSavedAt,
   onImportSingleClass,
   onImportFullBackup,
   onLogExport,
@@ -65,39 +92,34 @@ export function ArchiveModal({
   const [importError, setImportError] = useState('');
   const [importSuccess, setImportSuccess] = useState('');
   const [pendingImport, setPendingImport] = useState<PendingImport | null>(null);
-  const [driveBackupBusy, setDriveBackupBusy] = useState(false);
-  const [driveBackupSuccess, setDriveBackupSuccess] = useState<string | null>(null);
-  const [driveBackupError, setDriveBackupError] = useState<string | null>(null);
+
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupSuccess, setBackupSuccess] = useState<string | null>(null);
+  const [backupError, setBackupError] = useState<string | null>(null);
+  const [dedicatedFolderName, setDedicatedFolderName] = useState<string | null>(
+    null
+  );
+
+  const supportsDirPicker = isDirectoryPickerSupported();
+  const supportsSavePicker = isSaveFilePickerSupported();
 
   useEffect(() => {
     if (!open) return;
     setImportError('');
     setImportSuccess('');
     setPendingImport(null);
-    setDriveBackupBusy(false);
-    setDriveBackupSuccess(null);
-    setDriveBackupError(null);
-  }, [open]);
+    setBackupBusy(false);
+    setBackupSuccess(null);
+    setBackupError(null);
 
-  const handleDriveFullBackup = async () => {
-    if (driveBackupBusy) return;
-    setDriveBackupBusy(true);
-    setDriveBackupError(null);
-    setDriveBackupSuccess(null);
-    try {
-      const res = await onBackupFullToDrive();
-      if (res.ok) {
-        const sizeKb = Math.max(1, Math.round(res.result.sizeBytes / 1024));
-        setDriveBackupSuccess(
-          `Backup salvato in SYNC_TabScore/BACKUP/${res.result.fileName} (${sizeKb} KB).`
-        );
-      } else {
-        setDriveBackupError(res.error);
-      }
-    } finally {
-      setDriveBackupBusy(false);
-    }
-  };
+    let active = true;
+    void getDedicatedBackupFolderName().then((name) => {
+      if (active) setDedicatedFolderName(name);
+    });
+    return () => {
+      active = false;
+    };
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -110,6 +132,116 @@ export function ArchiveModal({
 
   if (!open) return null;
 
+  const totalAttachments = storeState.classes.reduce(
+    (sum, cls) => sum + cls.plates.filter((p) => Boolean(p.imageDataUrl)).length,
+    0
+  );
+
+  const handleChooseDedicatedFolder = async () => {
+    if (backupBusy) return;
+    setBackupBusy(true);
+    setBackupError(null);
+    setBackupSuccess(null);
+    try {
+      const res = await selectDedicatedBackupFolder();
+      if (res.ok) {
+        setDedicatedFolderName(res.folderName);
+        setBackupSuccess(
+          `Cartella locale di backup impostata: "${res.folderName}".`
+        );
+      } else if (!res.cancelled && res.error) {
+        setBackupError(res.error);
+      }
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
+  const handleClearDedicatedFolder = async () => {
+    await clearDedicatedBackupFolder();
+    setDedicatedFolderName(null);
+    setBackupSuccess(null);
+    setBackupError(null);
+  };
+
+  const handleSaveToDedicatedFolder = async () => {
+    if (backupBusy) return;
+    setBackupBusy(true);
+    setBackupError(null);
+    setBackupSuccess(null);
+    try {
+      const res = await saveFullBackupToDedicatedFolder(storeState);
+      if (res.ok) {
+        const sizeKb = Math.max(1, Math.round(res.sizeBytes / 1024));
+        if (res.folderName) setDedicatedFolderName(res.folderName);
+        setBackupSuccess(
+          `Backup salvato in "${res.folderName ?? 'Cartella backup'}/${res.fileName}" (${sizeKb} KB).`
+        );
+        onLogExport(
+          'Backup completo locale (.json)',
+          `Salvato backup completo "${res.fileName}" nella cartella locale "${res.folderName ?? 'dedicata'}" (${storeState.classes.length} classi).`
+        );
+      } else if (!res.cancelled && res.error) {
+        setBackupError(res.error);
+      }
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
+  const handleSaveFullBackup = async (preferDownload = false) => {
+    if (backupBusy) return;
+    setBackupBusy(true);
+    setBackupError(null);
+    setBackupSuccess(null);
+    try {
+      const res = await saveFullBackupLocally(storeState, { preferDownload });
+      if (res.ok) {
+        const sizeKb = Math.max(1, Math.round(res.sizeBytes / 1024));
+        setBackupSuccess(
+          res.method === 'file_picker'
+            ? `Backup locale salvato come "${res.fileName}" (${sizeKb} KB).`
+            : `Download locale avviato: "${res.fileName}" (${sizeKb} KB).`
+        );
+        onLogExport(
+          'Backup completo locale (.json)',
+          `Esportato backup completo locale "${res.fileName}" (${storeState.classes.length} classi).`
+        );
+      } else if (!res.cancelled && res.error) {
+        setBackupError(res.error);
+      }
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
+  const handleSaveSingleClassJson = async () => {
+    if (!activeClass || backupBusy) return;
+    setBackupBusy(true);
+    setBackupError(null);
+    setBackupSuccess(null);
+    try {
+      const res = await saveSingleClassBackupLocally(
+        activeClass,
+        storeState.auditLog
+      );
+      if (res.ok) {
+        const sizeKb = Math.max(1, Math.round(res.sizeBytes / 1024));
+        setBackupSuccess(
+          `Archivio classe salvato come "${res.fileName}" (${sizeKb} KB).`
+        );
+        onLogExport(
+          'Esportazione archivio classe (.json)',
+          `Esportato archivio JSON locale della classe "${activeClass.name}".`
+        );
+      } else if (!res.cancelled && res.error) {
+        setBackupError(res.error);
+      }
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
   const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
@@ -119,13 +251,15 @@ export function ArchiveModal({
     setImportSuccess('');
     try {
       const text = await file.text();
-      const parsed = JSON.parse(text);
+      const parsed = JSON.parse(text) as unknown;
       const validation = validateImportedArchive(parsed);
       if (!validation.ok) {
         setImportError(validation.error);
         setPendingImport(null);
         return;
       }
+
+      const summary = summarizeArchiveForConfirmation(validation.archive);
 
       if (validation.kind === 'single_class') {
         const exists = storeState.classes.some(
@@ -135,15 +269,17 @@ export function ArchiveModal({
           kind: 'single_class',
           archive: validation.archive,
           alreadyExists: exists,
+          summary,
         });
       } else {
         setPendingImport({
           kind: 'full_backup',
           archive: validation.archive,
+          summary,
         });
       }
     } catch {
-      setImportError('Impossibile leggere il file JSON selezionato.');
+      setImportError('Impossibile leggere il file JSON selezionato. Verifica che il file non sia danneggiato.');
       setPendingImport(null);
     }
   };
@@ -161,7 +297,7 @@ export function ArchiveModal({
             id="archive-modal-title"
             className="font-display text-base font-semibold text-slate-900"
           >
-            Esportazione, backup e importazione dati
+            Archivio locale, backup e ripristino
           </h2>
           <button
             type="button"
@@ -174,13 +310,174 @@ export function ArchiveModal({
         </div>
 
         <div className="flex-1 space-y-6 overflow-y-auto px-6 py-5">
-          {/* Export section */}
+          {/* Local-only persistence assurance */}
+          <div className="flex items-start gap-2.5 rounded-md border border-emerald-200 bg-emerald-50/70 px-3.5 py-2.5 text-xs text-emerald-950">
+            <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700" />
+            <div className="min-w-0 space-y-0.5">
+              <div className="font-semibold">
+                Archiviazione esclusivamente locale sul dispositivo
+              </div>
+              <div className="text-[11px] text-emerald-900">
+                Nessun dato viene inviato a server esterni o servizi cloud. Motore attivo:{' '}
+                <strong>
+                  {storageEngine === 'indexeddb' ? 'IndexedDB' : 'Archivio browser'}
+                </strong>
+                {lastSavedAt ? ` · Ultimo salvataggio: ${formatDateTimeIt(lastSavedAt)}` : ''}.
+              </div>
+            </div>
+          </div>
+
+          {/* Export & Local Backup section */}
           <section className="space-y-3">
             <h3 className="text-sm font-semibold text-slate-900">
-              Esportazione e backup
+              Backup completo locale (.json)
             </h3>
 
-            <div className="grid grid-cols-1 gap-3">
+            <div className="space-y-3 rounded-md border border-slate-200 bg-slate-50/70 p-3.5">
+              <div className="text-xs text-slate-600">
+                Include tutte le <strong>{storeState.classes.length} classi</strong>, studenti, tavole, cartelline, voti, penalità, esenzioni, impostazioni, cronologia
+                {totalAttachments > 0
+                  ? ` e ${totalAttachments} allegat${totalAttachments === 1 ? 'o' : 'i'} (immagini/PDF)`
+                  : ''}.
+              </div>
+
+              {supportsDirPicker && (
+                <div className="space-y-2 rounded-md border border-blue-200 bg-white p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex min-w-0 items-center gap-2 text-xs font-semibold text-slate-800">
+                      <FolderOpen className="h-4 w-4 shrink-0 text-blue-700" />
+                      <span className="truncate">
+                        {dedicatedFolderName
+                          ? `Cartella backup dedicata: ${dedicatedFolderName}`
+                          : 'Cartella locale dedicata ai backup'}
+                      </span>
+                    </div>
+                    {dedicatedFolderName && (
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          disabled={backupBusy}
+                          onClick={() => void handleChooseDedicatedFolder()}
+                          className="rounded border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+                        >
+                          Cambia
+                        </button>
+                        <button
+                          type="button"
+                          disabled={backupBusy}
+                          onClick={() => void handleClearDedicatedFolder()}
+                          title="Rimuovi cartella predefinita"
+                          className="rounded border border-slate-200 bg-white p-1 text-slate-500 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700 disabled:opacity-50"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {dedicatedFolderName ? (
+                    <button
+                      type="button"
+                      disabled={backupBusy}
+                      onClick={() => void handleSaveToDedicatedFolder()}
+                      className="inline-flex min-h-9 w-full items-center justify-center gap-2 rounded-md bg-blue-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-blue-800 disabled:cursor-wait disabled:opacity-70"
+                    >
+                      {backupBusy ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <HardDriveDownload className="h-4 w-4" />
+                      )}
+                      Salva backup nella cartella "{dedicatedFolderName}"
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={backupBusy}
+                      onClick={() => void handleChooseDedicatedFolder()}
+                      className="inline-flex min-h-9 w-full items-center justify-center gap-2 rounded-md border border-blue-300 bg-blue-50 px-3.5 py-2 text-xs font-semibold text-blue-900 hover:bg-blue-100 disabled:opacity-60"
+                    >
+                      <FolderOpen className="h-4 w-4 text-blue-700" />
+                      Scegli cartella locale di backup
+                    </button>
+                  )}
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={backupBusy}
+                  onClick={() => void handleSaveFullBackup(false)}
+                  className={`flex flex-1 items-center justify-between rounded-md border px-3.5 py-2.5 text-left transition-colors disabled:opacity-60 ${
+                    supportsDirPicker && dedicatedFolderName
+                      ? 'border-slate-300 bg-white text-slate-900 hover:border-blue-300 hover:bg-blue-50/40'
+                      : 'border-blue-700 bg-blue-700 text-white hover:bg-blue-800'
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5">
+                    <HardDriveDownload className="h-4 w-4 shrink-0" />
+                    <div>
+                      <div className="text-xs font-semibold">
+                        {supportsSavePicker
+                          ? 'Salva backup scegliendo cartella…'
+                          : 'Scarica backup completo (.json)'}
+                      </div>
+                      <div
+                        className={`text-[11px] ${
+                          supportsDirPicker && dedicatedFolderName
+                            ? 'text-slate-500'
+                            : 'text-blue-100'
+                        }`}
+                      >
+                        File con data e ora: BACKUP_TabScore_AAAA-MM-GG_HH-MM-SS.json
+                      </div>
+                    </div>
+                  </div>
+                  <Download className="h-4 w-4 shrink-0 opacity-80" />
+                </button>
+              </div>
+
+              {supportsSavePicker && (
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    disabled={backupBusy}
+                    onClick={() => void handleSaveFullBackup(true)}
+                    className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-600 underline-offset-2 hover:text-slate-900 hover:underline disabled:opacity-50"
+                  >
+                    <Download className="h-3 w-3" />
+                    Oppure avvia download diretto nel browser
+                  </button>
+                </div>
+              )}
+
+              {!supportsDirPicker && !supportsSavePicker && (
+                <p className="text-[11px] text-slate-500">
+                  Questo browser gestisce la cartella di destinazione tramite il download standard del dispositivo.
+                </p>
+              )}
+
+              {backupSuccess && (
+                <div className="flex items-start gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800">
+                  <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+                  <span>{backupSuccess}</span>
+                </div>
+              )}
+
+              {backupError && (
+                <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-800">
+                  {backupError}
+                </div>
+              )}
+            </div>
+          </section>
+
+          {/* Single-class exports */}
+          <section className="space-y-2.5 border-t border-slate-200 pt-5">
+            <h3 className="text-sm font-semibold text-slate-900">
+              Esportazione singola classe
+            </h3>
+            <div className="grid grid-cols-1 gap-2.5">
               <button
                 type="button"
                 disabled={!activeClass}
@@ -212,118 +509,33 @@ export function ArchiveModal({
 
               <button
                 type="button"
-                disabled={!activeClass}
-                onClick={() => {
-                  if (!activeClass) return;
-                  exportSingleClassJson(activeClass, storeState.auditLog);
-                  onLogExport(
-                    'Esportazione archivio classe (.json)',
-                    `Esportato archivio JSON della classe "${activeClass.name}".`
-                  );
-                }}
+                disabled={!activeClass || backupBusy}
+                onClick={() => void handleSaveSingleClassJson()}
                 className="flex items-center justify-between rounded-md border border-slate-200 bg-white px-4 py-3 text-left hover:border-blue-300 hover:bg-blue-50/40 disabled:opacity-40"
               >
                 <div className="flex items-center gap-3">
-                  <Download className="h-5 w-5 text-blue-700" />
+                  <HardDrive className="h-5 w-5 text-blue-700" />
                   <div>
                     <div className="text-sm font-semibold text-slate-900">
                       Esporta archivio singola classe (.json)
                     </div>
                     <div className="text-xs text-slate-500">
-                      Salva tutti i dati, impostazioni e valutazioni di {activeClass?.name ?? 'questa classe'}
+                      Salva tutti i dati, allegati, impostazioni e valutazioni di {activeClass?.name ?? 'questa classe'}
                     </div>
                   </div>
                 </div>
                 <Download className="h-4 w-4 text-slate-400" />
               </button>
-
-              <div className="space-y-2 rounded-md border border-slate-200 bg-slate-50/60 p-2.5">
-                <button
-                  type="button"
-                  disabled={driveBackupBusy}
-                  onClick={() => void handleDriveFullBackup()}
-                  className="flex w-full items-center justify-between rounded-md border border-slate-200 bg-white px-4 py-3 text-left hover:border-blue-400 hover:bg-blue-50/40 disabled:cursor-wait disabled:opacity-70"
-                >
-                  <div className="flex items-center gap-3">
-                    {driveBackupBusy ? (
-                      <Loader2 className="h-5 w-5 animate-spin text-blue-700" />
-                    ) : (
-                      <CloudUpload className="h-5 w-5 text-blue-700" />
-                    )}
-                    <div>
-                      <div className="text-sm font-semibold text-slate-900">
-                        Backup completo di tutte le classi (.json)
-                      </div>
-                      <div className="text-xs text-slate-500">
-                        {driveBackupBusy
-                          ? 'Salvataggio in corso nella cartella SYNC_TabScore/BACKUP...'
-                          : driveConnected
-                          ? `Salva in Google Drive → SYNC_TabScore/BACKUP (${storeState.classes.length} classi${
-                              driveAccountEmail ? ` · ${driveAccountEmail}` : ''
-                            })`
-                          : `Archivio integrale di ${storeState.classes.length} classi in SYNC_TabScore/BACKUP (Google Drive)`}
-                      </div>
-                    </div>
-                  </div>
-                  <Upload className="h-4 w-4 text-slate-400" />
-                </button>
-
-                <div className="flex flex-wrap items-center justify-between gap-2 px-1">
-                  <span className="text-[11px] text-slate-500">
-                    {!isOnline
-                      ? 'Offline: il salvataggio in SYNC_TabScore/BACKUP richiede connessione.'
-                      : driveConnected
-                      ? 'Backup salvato separatamente dal file di sincronizzazione automatica.'
-                      : 'Google Drive non collegato.'}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      exportFullBackupJson(storeState);
-                      onLogExport(
-                        'Backup completo locale (.json)',
-                        `Scaricato backup completo locale con ${storeState.classes.length} classi.`
-                      );
-                    }}
-                    className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-600 underline-offset-2 hover:text-slate-900 hover:underline"
-                  >
-                    <HardDriveDownload className="h-3.5 w-3.5" />
-                    Scarica copia locale (.json)
-                  </button>
-                </div>
-
-                {driveBackupSuccess && (
-                  <div className="flex items-start gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800">
-                    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
-                    <span>{driveBackupSuccess}</span>
-                  </div>
-                )}
-
-                {driveBackupError && (
-                  <div className="space-y-2 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-800">
-                    <div>{driveBackupError}</div>
-                    {!driveConnected && (
-                      <button
-                        type="button"
-                        onClick={onOpenDriveSettings}
-                        className="inline-flex items-center gap-1 rounded border border-rose-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-rose-800 hover:bg-rose-100"
-                      >
-                        Apri impostazioni Google Drive
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
             </div>
           </section>
 
-          {/* Import section */}
+          {/* Import / Restore section */}
           <section className="space-y-3 border-t border-slate-200 pt-5">
             <h3 className="text-sm font-semibold text-slate-900">
-              Importazione archivio (.json)
+              Importazione e ripristino da file locale (.json)
             </h3>
             <p className="text-xs text-slate-500">
-              Puoi importare sia il file di una singola classe sia un backup completo precedentemente esportato.
+              Seleziona un backup completo o l’archivio di una singola classe esportato da TabScore. Prima di modificare i dati locali verranno verificati formato e integrità.
             </p>
 
             <input
@@ -340,7 +552,7 @@ export function ArchiveModal({
               className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 bg-slate-50 px-4 py-2 text-sm font-medium text-slate-800 hover:bg-slate-100"
             >
               <Upload className="h-4 w-4" />
-              Seleziona file archivio (.json)
+              Seleziona file backup (.json)
             </button>
 
             {importError && (
@@ -359,12 +571,18 @@ export function ArchiveModal({
               <div className="space-y-3 rounded-md border border-blue-200 bg-blue-50/70 p-4 text-sm">
                 <div>
                   <div className="font-semibold text-slate-900">
-                    Archivio classe pronto: {pendingImport.archive.classData.name}
+                    Archivio classe verificato: {pendingImport.archive.classData.name}
                   </div>
                   <div className="mt-0.5 text-xs text-slate-600">
-                    {pendingImport.archive.classData.students.length} studenti ·{' '}
-                    {pendingImport.archive.classData.plates.length} tavole ·{' '}
-                    {pendingImport.archive.classData.folders.length} cartelline
+                    {pendingImport.summary.studentCount} studenti ·{' '}
+                    {pendingImport.summary.plateCount} tavole ·{' '}
+                    {pendingImport.summary.folderCount} cartelline
+                    {pendingImport.summary.attachmentCount > 0
+                      ? ` · ${pendingImport.summary.attachmentCount} allegati`
+                      : ''}
+                    {pendingImport.summary.exportedAt
+                      ? ` · Esportato il ${formatDateTimeIt(pendingImport.summary.exportedAt)}`
+                      : ''}
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
@@ -373,7 +591,7 @@ export function ArchiveModal({
                     onClick={() => {
                       onImportSingleClass(pendingImport.archive, 'add_new');
                       setPendingImport(null);
-                      setImportSuccess('Classe importata e aggiunta al registro.');
+                      setImportSuccess('Classe importata e aggiunta al registro locale.');
                     }}
                     className="rounded-md bg-blue-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-800"
                   >
@@ -388,7 +606,7 @@ export function ArchiveModal({
                           'replace_existing'
                         );
                         setPendingImport(null);
-                        setImportSuccess('Classe esistente aggiornata dall’archivio.');
+                        setImportSuccess('Classe esistente aggiornata dall’archivio locale.');
                       }}
                       className="rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-100"
                     >
@@ -410,10 +628,21 @@ export function ArchiveModal({
               <div className="space-y-3 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm">
                 <div>
                   <div className="font-semibold text-slate-900">
-                    Ripristino backup completo ({pendingImport.archive.classes.length} classi)
+                    Ripristino backup completo verificato ({pendingImport.summary.classCount} classi)
                   </div>
-                  <div className="mt-0.5 text-xs text-amber-900">
-                    Attenzione: il ripristino sostituirà le classi attualmente salvate nel browser con quelle contenute nel backup.
+                  <div className="mt-0.5 text-xs text-slate-700">
+                    {pendingImport.summary.studentCount} studenti ·{' '}
+                    {pendingImport.summary.plateCount} tavole ·{' '}
+                    {pendingImport.summary.folderCount} cartelline
+                    {pendingImport.summary.attachmentCount > 0
+                      ? ` · ${pendingImport.summary.attachmentCount} allegati`
+                      : ''}
+                    {pendingImport.summary.exportedAt
+                      ? ` · Creato il ${formatDateTimeIt(pendingImport.summary.exportedAt)}`
+                      : ''}
+                  </div>
+                  <div className="mt-1.5 text-xs text-amber-900">
+                    Attenzione: il ripristino sostituirà l’archivio attuale su questo dispositivo con il contenuto del backup selezionato.
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
@@ -422,7 +651,7 @@ export function ArchiveModal({
                     onClick={() => {
                       onImportFullBackup(pendingImport.archive);
                       setPendingImport(null);
-                      setImportSuccess('Backup completo ripristinato con successo.');
+                      setImportSuccess('Backup completo ripristinato con successo nell’archivio locale.');
                     }}
                     className="rounded-md bg-amber-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-800"
                   >
