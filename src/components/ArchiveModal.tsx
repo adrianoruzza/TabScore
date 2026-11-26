@@ -429,7 +429,7 @@ export function ArchiveModal({
                             : 'text-blue-100'
                         }`}
                       >
-                        File con data e ora: BACKUP_TabScore_AAAA-MM-GG_HH-MM-SS.json
+                        File con data e ora: backup-tabscore-AAAA-MM-GG_HH-MM.json
                       </div>
                     </div>
                   </div>

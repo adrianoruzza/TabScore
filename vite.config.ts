@@ -27,7 +27,7 @@ export default defineConfig(({command}) => {
           'pwa-192x192.png',
           'pwa-512x512.png',
           'pwa-maskable-512x512.png',
-          'assets/aistudio/TabScore_34d66820.png',
+          'assets/aistudio/TabScore_9235ba90.png',
         ],
         manifest: {
           id: base,

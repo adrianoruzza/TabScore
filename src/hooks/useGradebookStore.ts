@@ -29,6 +29,7 @@ import {
 } from '../utils/calculations';
 import { pickNextDistinctClassColorId } from '../utils/classColors';
 import {
+  flushArchiveEmergencySync,
   hydrateLocalArchive,
   isIndexedDbAvailable,
   persistArchiveLocally,
@@ -41,11 +42,10 @@ import {
   sortStudentsAlphabeticallyIt,
 } from '../utils/studentImport';
 import {
+  createEmptyShellState,
   createId,
   DEFAULT_CLASS_SETTINGS,
-  loadStoreState,
   normalizeClassData,
-  saveStoreState,
   sortAndNormalizeClasses,
 } from '../utils/storage';
 
@@ -1038,16 +1038,18 @@ export function applyReorderClasses(
 }
 
 export function useGradebookStore() {
+  // Always start with an in-memory placeholder shell while IndexedDB hydrates.
+  // Never generate or write demo data synchronously before reading IndexedDB.
   const [storeRecord, setStoreRecord] = useState<{
     state: GradebookStoreState;
     history: StoreHistoryState;
   }>(() => ({
-    state: loadStoreState(),
+    state: createEmptyShellState(),
     history: EMPTY_STORE_HISTORY,
   }));
-  const [storageReady, setStorageReady] = useState<boolean>(
-    () => !isIndexedDbAvailable()
-  );
+  const [storageReady, setStorageReady] = useState<boolean>(false);
+  const [hydrationError, setHydrationError] = useState<string | null>(null);
+  const [hydrationAttempt, setHydrationAttempt] = useState<number>(0);
   const [storageEngine, setStorageEngine] = useState<PersistenceEngine>(() =>
     isIndexedDbAvailable() ? 'indexeddb' : 'localstorage'
   );
@@ -1057,10 +1059,11 @@ export function useGradebookStore() {
   const state = storeRecord.state;
   const stateRef = useRef(state);
   stateRef.current = state;
-  const hasUserMutatedRef = useRef(false);
+  const canPersistRef = useRef(false);
   const persistQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   const enqueuePersist = useCallback((nextState: GradebookStoreState) => {
+    if (!canPersistRef.current) return;
     persistQueueRef.current = persistQueueRef.current
       .then(async () => {
         const res = await persistArchiveLocally(nextState);
@@ -1081,6 +1084,10 @@ export function useGradebookStore() {
 
   useEffect(() => {
     let active = true;
+    canPersistRef.current = false;
+    setStorageReady(false);
+    setHydrationError(null);
+
     void requestPersistentStorageBestEffort();
     void hydrateLocalArchive()
       .then((res) => {
@@ -1089,23 +1096,60 @@ export function useGradebookStore() {
         if (res.savedAt) {
           setLastSavedAt(res.savedAt);
         }
-        if (!hasUserMutatedRef.current) {
-          stateRef.current = res.state;
-          setStoreRecord({
-            state: res.state,
-            history: EMPTY_STORE_HISTORY,
-          });
+        if (res.warning) {
+          setStorageError(res.warning);
         }
+        stateRef.current = res.state;
+        setStoreRecord({
+          state: res.state,
+          history: EMPTY_STORE_HISTORY,
+        });
+        canPersistRef.current = true;
+        setHydrationError(null);
         setStorageReady(true);
       })
-      .catch(() => {
+      .catch((err) => {
         if (!active) return;
+        canPersistRef.current = false;
+        const message =
+          err instanceof Error && err.message
+            ? err.message
+            : 'Impossibile caricare i dati salvati da IndexedDB. I dati esistenti non sono stati cancellati.';
+        setHydrationError(message);
         setStorageReady(true);
       });
 
     return () => {
       active = false;
     };
+  }, [hydrationAttempt]);
+
+  // Emergency save on tab close / reload / app backgrounding
+  useEffect(() => {
+    const flushNow = () => {
+      if (!canPersistRef.current) return;
+      flushArchiveEmergencySync(stateRef.current);
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        flushNow();
+      }
+    };
+
+    window.addEventListener('beforeunload', flushNow);
+    window.addEventListener('pagehide', flushNow);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('beforeunload', flushNow);
+      window.removeEventListener('pagehide', flushNow);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, []);
+
+  const retryHydration = useCallback(() => {
+    setHydrationAttempt((n) => n + 1);
   }, []);
 
   const clearStorageError = useCallback(() => setStorageError(null), []);
@@ -1119,8 +1163,8 @@ export function useGradebookStore() {
         coalesceKey?: string;
       }
     ) => {
+      if (!canPersistRef.current) return;
       const recordHistory = options?.recordHistory !== false;
-      hasUserMutatedRef.current = true;
       setStoreRecord((prev) => {
         const rawNext = updater(prev.state);
         if (rawNext === prev.state) return prev;
@@ -1128,8 +1172,8 @@ export function useGradebookStore() {
           rawNext.auditLog.length > 500
             ? { ...rawNext, auditLog: rawNext.auditLog.slice(0, 500) }
             : rawNext;
-        enqueuePersist(next);
         stateRef.current = next;
+        enqueuePersist(next);
         const nextHistory = recordHistory
           ? pushHistoryEntry(prev.history, prev.state, next, {
               label: options?.label,
@@ -1146,12 +1190,12 @@ export function useGradebookStore() {
   );
 
   const undo = useCallback(() => {
-    hasUserMutatedRef.current = true;
+    if (!canPersistRef.current) return;
     setStoreRecord((prev) => {
       const result = applyUndoHistory(prev.state, prev.history);
       if (!result) return prev;
-      enqueuePersist(result.state);
       stateRef.current = result.state;
+      enqueuePersist(result.state);
       return {
         state: result.state,
         history: result.history,
@@ -1160,12 +1204,12 @@ export function useGradebookStore() {
   }, [enqueuePersist]);
 
   const redo = useCallback(() => {
-    hasUserMutatedRef.current = true;
+    if (!canPersistRef.current) return;
     setStoreRecord((prev) => {
       const result = applyRedoHistory(prev.state, prev.history);
       if (!result) return prev;
-      enqueuePersist(result.state);
       stateRef.current = result.state;
+      enqueuePersist(result.state);
       return {
         state: result.state,
         history: result.history,
@@ -1977,14 +2021,9 @@ export function useGradebookStore() {
         ].slice(0, 500),
       };
 
-      hasUserMutatedRef.current = true;
-      if (isIndexedDbAvailable()) {
-        enqueuePersist(nextState);
-      } else {
-        const savedOk = saveStoreState(nextState);
-        if (!savedOk) return false;
-      }
+      if (!canPersistRef.current) return false;
       stateRef.current = nextState;
+      enqueuePersist(nextState);
       setStoreRecord((prev) => ({
         state: nextState,
         history: pushHistoryEntry(prev.history, prev.state, nextState, {
@@ -2003,6 +2042,14 @@ export function useGradebookStore() {
       mode: PlateImportMode,
       includeAttachments = false
     ): PlateImportResult => {
+      if (!canPersistRef.current) {
+        return {
+          ok: false,
+          importedCount: 0,
+          skippedCount: 0,
+          error: 'Archivio locale non ancora pronto. Riprova tra un istante.',
+        };
+      }
       const current = stateRef.current;
       const { nextState, result } = applyImportPlatesFromClass(current, {
         targetClassId,
@@ -2013,22 +2060,8 @@ export function useGradebookStore() {
       if (!result.ok) {
         return result;
       }
-      hasUserMutatedRef.current = true;
-      if (isIndexedDbAvailable()) {
-        enqueuePersist(nextState);
-      } else {
-        const savedOk = saveStoreState(nextState);
-        if (!savedOk) {
-          return {
-            ok: false,
-            importedCount: 0,
-            skippedCount: 0,
-            error:
-              'Spazio locale insufficiente per copiare anche gli allegati. Riprova importando solo la struttura delle tavole.',
-          };
-        }
-      }
       stateRef.current = nextState;
+      enqueuePersist(nextState);
       setStoreRecord((prev) => ({
         state: nextState,
         history: pushHistoryEntry(prev.history, prev.state, nextState),
@@ -2045,6 +2078,14 @@ export function useGradebookStore() {
       mode: PlateImportMode,
       sourceFileName?: string
     ): PlateImportResult => {
+      if (!canPersistRef.current) {
+        return {
+          ok: false,
+          importedCount: 0,
+          skippedCount: 0,
+          error: 'Archivio locale non ancora pronto. Riprova tra un istante.',
+        };
+      }
       const current = stateRef.current;
       const { nextState, result } = applyImportPlatesFromExternalList(current, {
         targetClassId,
@@ -2055,22 +2096,8 @@ export function useGradebookStore() {
       if (!result.ok) {
         return result;
       }
-      hasUserMutatedRef.current = true;
-      if (isIndexedDbAvailable()) {
-        enqueuePersist(nextState);
-      } else {
-        const savedOk = saveStoreState(nextState);
-        if (!savedOk) {
-          return {
-            ok: false,
-            importedCount: 0,
-            skippedCount: 0,
-            error:
-              'Spazio locale insufficiente per salvare le tavole importate.',
-          };
-        }
-      }
       stateRef.current = nextState;
+      enqueuePersist(nextState);
       setStoreRecord((prev) => ({
         state: nextState,
         history: pushHistoryEntry(prev.history, prev.state, nextState),
@@ -2818,6 +2845,8 @@ export function useGradebookStore() {
   return {
     state,
     storageReady,
+    hydrationError,
+    retryHydration,
     storageEngine,
     lastSavedAt,
     storageError,

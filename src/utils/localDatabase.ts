@@ -15,6 +15,7 @@ const PREVIOUS_SNAPSHOT_ID = 'previous_snapshot';
 const BACKUP_DIR_HANDLE_ID = 'backup_directory';
 
 export const STORAGE_META_KEY = 'tabscore_storage_meta_v1';
+export const UI_PREFS_STORAGE_KEY = 'tabscore_ui_prefs_v1';
 const LOCALSTORAGE_MIRROR_MAX_BYTES = 2_500_000;
 
 export type PersistenceEngine = 'indexeddb' | 'localstorage';
@@ -24,6 +25,13 @@ export interface LocalStorageMeta {
   updatedAt: string;
   revision: number;
   byteLength: number;
+}
+
+export interface TabScoreUiPrefs {
+  activeSection: 'gradebook' | 'data';
+  mobileMode: 'table' | 'cards';
+  dataYearLevel: 'all' | 'unclassified' | 1 | 2 | 3 | 4 | 5;
+  dataSelectedClassId: string | null;
 }
 
 interface ArchiveDbRecord {
@@ -48,6 +56,7 @@ export interface LocalHydrationResult {
   migratedFromLocalStorage: boolean;
   recoveredFromSnapshot: boolean;
   isNewSeed: boolean;
+  warning?: string;
 }
 
 export interface LocalPersistResult {
@@ -68,6 +77,61 @@ const LEGACY_CLOUD_LOCALSTORAGE_KEYS = [
 ] as const;
 
 let legacyCleanupDone = false;
+let cachedDb: IDBDatabase | null = null;
+let cachedDbPromise: Promise<IDBDatabase> | null = null;
+let lastKnownRevision = 0;
+
+const DEFAULT_UI_PREFS: TabScoreUiPrefs = {
+  activeSection: 'gradebook',
+  mobileMode: 'table',
+  dataYearLevel: 'all',
+  dataSelectedClassId: null,
+};
+
+export function loadUiPrefs(): TabScoreUiPrefs {
+  if (typeof localStorage === 'undefined') return { ...DEFAULT_UI_PREFS };
+  try {
+    const raw = localStorage.getItem(UI_PREFS_STORAGE_KEY);
+    if (!raw) return { ...DEFAULT_UI_PREFS };
+    const parsed = JSON.parse(raw) as Partial<TabScoreUiPrefs>;
+    const activeSection = parsed.activeSection === 'data' ? 'data' : 'gradebook';
+    const mobileMode = parsed.mobileMode === 'cards' ? 'cards' : 'table';
+    const yl = parsed.dataYearLevel;
+    const dataYearLevel: TabScoreUiPrefs['dataYearLevel'] =
+      yl === 'all' ||
+      yl === 'unclassified' ||
+      yl === 1 ||
+      yl === 2 ||
+      yl === 3 ||
+      yl === 4 ||
+      yl === 5
+        ? yl
+        : 'all';
+    const dataSelectedClassId =
+      typeof parsed.dataSelectedClassId === 'string' && parsed.dataSelectedClassId
+        ? parsed.dataSelectedClassId
+        : null;
+    return {
+      activeSection,
+      mobileMode,
+      dataYearLevel,
+      dataSelectedClassId,
+    };
+  } catch {
+    return { ...DEFAULT_UI_PREFS };
+  }
+}
+
+export function saveUiPrefsPatch(patch: Partial<TabScoreUiPrefs>): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    const current = loadUiPrefs();
+    const next: TabScoreUiPrefs = { ...current, ...patch };
+    localStorage.setItem(UI_PREFS_STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    // Ignore minor UI preference storage failures
+  }
+}
 
 /**
  * Purges obsolete Google Drive / Firebase / cloud-sync keys left over in the
@@ -222,9 +286,29 @@ export function getLatestStateTimestampMs(state: GradebookStoreState): number {
   return latest;
 }
 
+export function closeCachedLocalDb(): void {
+  if (cachedDb) {
+    try {
+      cachedDb.close();
+    } catch {
+      // Ignore
+    }
+    cachedDb = null;
+  }
+  cachedDbPromise = null;
+}
+
 function openLocalDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
+  if (cachedDb) {
+    return Promise.resolve(cachedDb);
+  }
+  if (cachedDbPromise) {
+    return cachedDbPromise;
+  }
+
+  cachedDbPromise = new Promise<IDBDatabase>((resolve, reject) => {
     if (!isIndexedDbAvailable()) {
+      cachedDbPromise = null;
       reject(new Error('IndexedDB non disponibile in questo browser.'));
       return;
     }
@@ -238,12 +322,39 @@ function openLocalDb(): Promise<IDBDatabase> {
         db.createObjectStore(HANDLES_STORE, { keyPath: 'id' });
       }
     };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () =>
-      reject(new Error('Impossibile aprire il database locale IndexedDB.'));
-    request.onblocked = () =>
-      reject(new Error('Database locale temporaneamente bloccato da un’altra scheda.'));
+    request.onsuccess = () => {
+      const db = request.result;
+      cachedDb = db;
+      cachedDbPromise = null;
+      db.onversionchange = () => {
+        try {
+          db.close();
+        } catch {
+          // Ignore
+        }
+        if (cachedDb === db) cachedDb = null;
+      };
+      db.onclose = () => {
+        if (cachedDb === db) cachedDb = null;
+      };
+      resolve(db);
+    };
+    request.onerror = () => {
+      cachedDbPromise = null;
+      const reason = request.error?.message
+        ? ` (${request.error.message})`
+        : '';
+      reject(new Error(`Impossibile aprire il database locale IndexedDB${reason}.`));
+    };
+    request.onblocked = () => {
+      cachedDbPromise = null;
+      reject(
+        new Error('Database locale temporaneamente bloccato da un’altra scheda del browser.')
+      );
+    };
   });
+
+  return cachedDbPromise;
 }
 
 async function readArchiveRecord(
@@ -257,7 +368,7 @@ async function readArchiveRecord(
     req.onsuccess = () => {
       resolve((req.result as ArchiveDbRecord | undefined) ?? null);
     };
-    req.onerror = () => reject(new Error('Errore lettura archivio locale.'));
+    req.onerror = () => reject(new Error('Errore durante la lettura dell’archivio locale in IndexedDB.'));
   });
 }
 
@@ -272,7 +383,7 @@ async function writeArchiveRecordAtomic(
   return new Promise((resolve, reject) => {
     const tx = db.transaction(ARCHIVE_STORE, 'readwrite');
     const store = tx.objectStore(ARCHIVE_STORE);
-    let nextRevision = 1;
+    let nextRevision = Math.max(1, lastKnownRevision + 1);
 
     const getReq = store.get(PRIMARY_RECORD_ID);
     getReq.onsuccess = () => {
@@ -303,7 +414,10 @@ async function writeArchiveRecordAtomic(
       reject(new Error('Errore preparazione transazione locale.'));
     };
 
-    tx.oncomplete = () => resolve({ savedAt, revision: nextRevision });
+    tx.oncomplete = () => {
+      lastKnownRevision = nextRevision;
+      resolve({ savedAt, revision: nextRevision });
+    };
     tx.onerror = () =>
       reject(new Error('Errore durante il salvataggio in IndexedDB.'));
     tx.onabort = () =>
@@ -317,7 +431,6 @@ function tryUpdateLocalStorageMirror(
 ): boolean {
   if (typeof localStorage === 'undefined') return false;
   if (serialized.length > LOCALSTORAGE_MIRROR_MAX_BYTES) {
-    // Once IndexedDB safely holds the large archive, remove any stale mirror copy
     if (indexedDbSucceeded) {
       try {
         localStorage.removeItem(STORAGE_KEY);
@@ -358,8 +471,57 @@ export async function requestPersistentStorageBestEffort(): Promise<boolean> {
 }
 
 /**
+ * Synchronous best-effort emergency flush designed for `beforeunload`,
+ * `pagehide`, and `visibilitychange` (`hidden`) events.
+ * Uses the already-open cached IDBDatabase handle so the transaction starts
+ * synchronously before the browser tears down the page, and refreshes the
+ * lightweight localStorage mirror when size allows.
+ */
+export function flushArchiveEmergencySync(state: GradebookStoreState): void {
+  const normalized = normalizeStoredState(state);
+  if (!normalized) return;
+
+  const savedAt = new Date().toISOString();
+  let serialized = '';
+  try {
+    serialized = JSON.stringify(normalized);
+  } catch {
+    return;
+  }
+
+  let idbStarted = false;
+  if (cachedDb) {
+    try {
+      const tx = cachedDb.transaction(ARCHIVE_STORE, 'readwrite');
+      const store = tx.objectStore(ARCHIVE_STORE);
+      const nextRevision = Math.max(1, lastKnownRevision + 1);
+      lastKnownRevision = nextRevision;
+      store.put({
+        id: PRIMARY_RECORD_ID,
+        state: normalized,
+        savedAt,
+        revision: nextRevision,
+      } satisfies ArchiveDbRecord);
+      idbStarted = true;
+    } catch {
+      // Connection may have been closed; fall back to mirror
+    }
+  }
+
+  tryUpdateLocalStorageMirror(serialized, idbStarted);
+  if (idbStarted) {
+    writeStorageMeta({
+      engine: 'indexeddb',
+      updatedAt: savedAt,
+      revision: lastKnownRevision,
+      byteLength: serialized.length,
+    });
+  }
+}
+
+/**
  * Persists the authoritative gradebook archive locally in IndexedDB (primary),
- * maintaining a previous_snapshot recovery slot and a fast-boot localStorage
+ * maintaining a previous_snapshot recovery slot and a secondary localStorage
  * mirror when payload size allows.
  */
 export async function persistArchiveLocally(
@@ -395,9 +557,8 @@ export async function persistArchiveLocally(
   const byteLength = new Blob([serialized]).size;
 
   if (isIndexedDbAvailable()) {
-    let db: IDBDatabase | null = null;
     try {
-      db = await openLocalDb();
+      const db = await openLocalDb();
       const { savedAt, revision } = await writeArchiveRecordAtomic(
         db,
         normalized,
@@ -418,35 +579,58 @@ export async function persistArchiveLocally(
         byteLength,
       };
     } catch {
-      // Fallback to localStorage only if IndexedDB fails
-      const lsSaved = tryUpdateLocalStorageMirror(serialized, false);
-      const savedAt = new Date().toISOString();
-      if (lsSaved) {
+      // If cached handle went stale, reset and retry once before falling back
+      closeCachedLocalDb();
+      try {
+        const retryDb = await openLocalDb();
+        const { savedAt, revision } = await writeArchiveRecordAtomic(
+          retryDb,
+          normalized,
+          options
+        );
+        tryUpdateLocalStorageMirror(serialized, true);
         writeStorageMeta({
-          engine: 'localstorage',
+          engine: 'indexeddb',
           updatedAt: savedAt,
-          revision: (readStorageMeta()?.revision ?? 0) + 1,
+          revision,
           byteLength,
         });
         return {
           ok: true,
-          engine: 'localstorage',
+          engine: 'indexeddb',
           savedAt,
-          revision: readStorageMeta()?.revision ?? 1,
+          revision,
           byteLength,
         };
+      } catch {
+        const lsSaved = tryUpdateLocalStorageMirror(serialized, false);
+        const savedAt = new Date().toISOString();
+        if (lsSaved) {
+          const rev = (readStorageMeta()?.revision ?? 0) + 1;
+          writeStorageMeta({
+            engine: 'localstorage',
+            updatedAt: savedAt,
+            revision: rev,
+            byteLength,
+          });
+          return {
+            ok: true,
+            engine: 'localstorage',
+            savedAt,
+            revision: rev,
+            byteLength,
+          };
+        }
+        return {
+          ok: false,
+          engine: 'indexeddb',
+          savedAt,
+          revision: 0,
+          byteLength,
+          error:
+            'Impossibile salvare i dati sul dispositivo (spazio locale esaurito o archiviazione bloccata dal browser).',
+        };
       }
-      return {
-        ok: false,
-        engine: 'indexeddb',
-        savedAt,
-        revision: 0,
-        byteLength,
-        error:
-          'Impossibile salvare i dati sul dispositivo (spazio locale esaurito o archiviazione bloccata dal browser).',
-      };
-    } finally {
-      db?.close();
     }
   }
 
@@ -480,153 +664,148 @@ export async function persistArchiveLocally(
 }
 
 /**
- * Loads the authoritative local archive on startup with automatic, zero-loss
- * migration from legacy localStorage (`dt_registro_tavole_v1`) into IndexedDB
- * and automatic corruption recovery from `previous_snapshot`.
+ * Loads the authoritative local archive on startup:
+ * 1. Always reads IndexedDB primary first — NEVER overwrites IndexedDB with demo data or stale localStorage.
+ * 2. If IndexedDB primary is missing/corrupted, tries IndexedDB previous_snapshot recovery.
+ * 3. If IndexedDB has no archive yet, migrates any existing legacy localStorage archive into IndexedDB.
+ * 4. Creates sample seed data ONLY on a genuinely brand-new device with zero existing data anywhere.
+ * 5. If IndexedDB fails to open/read and no safe fallback exists, throws an error instead of wiping/overwriting data.
  */
 export async function hydrateLocalArchive(): Promise<LocalHydrationResult> {
   cleanupLegacyCloudArtifacts();
   const legacyState = readLegacyLocalStorageState();
 
   if (isIndexedDbAvailable()) {
-    let db: IDBDatabase | null = null;
+    let db: IDBDatabase;
     try {
       db = await openLocalDb();
-      const primaryRecord = await readArchiveRecord(db, PRIMARY_RECORD_ID);
-      const primaryState = primaryRecord
-        ? normalizeStoredState(primaryRecord.state)
-        : null;
-
-      // Case 1: Both IndexedDB and localStorage exist -> keep the newest one safely
-      if (primaryState && legacyState) {
-        const idbTs = Math.max(
-          getLatestStateTimestampMs(primaryState),
-          Date.parse(primaryRecord?.savedAt || '') || 0
-        );
-        const lsTs = getLatestStateTimestampMs(legacyState);
-        // Only prefer localStorage over IndexedDB if localStorage clearly has newer class edits
-        if (lsTs > idbTs + 1000) {
-          const { savedAt, revision } = await writeArchiveRecordAtomic(
-            db,
-            legacyState,
-            { preservePrevious: true }
-          );
-          const byteLength = new Blob([JSON.stringify(legacyState)]).size;
-          writeStorageMeta({
-            engine: 'indexeddb',
-            updatedAt: savedAt,
-            revision,
-            byteLength,
-          });
-          return {
-            state: legacyState,
-            engine: 'indexeddb',
-            savedAt,
-            revision,
-            migratedFromLocalStorage: true,
-            recoveredFromSnapshot: false,
-            isNewSeed: false,
-          };
-        }
-
-        return {
-          state: primaryState,
-          engine: 'indexeddb',
-          savedAt: primaryRecord?.savedAt ?? null,
-          revision: primaryRecord?.revision ?? 1,
-          migratedFromLocalStorage: false,
-          recoveredFromSnapshot: false,
-          isNewSeed: false,
-        };
-      }
-
-      // Case 2: IndexedDB already has authoritative data
-      if (primaryState) {
-        return {
-          state: primaryState,
-          engine: 'indexeddb',
-          savedAt: primaryRecord?.savedAt ?? null,
-          revision: primaryRecord?.revision ?? 1,
-          migratedFromLocalStorage: false,
-          recoveredFromSnapshot: false,
-          isNewSeed: false,
-        };
-      }
-
-      // Case 3: IndexedDB primary missing/corrupted -> try previous_snapshot recovery
-      const snapshotRecord = await readArchiveRecord(db, PREVIOUS_SNAPSHOT_ID);
-      const snapshotState = snapshotRecord
-        ? normalizeStoredState(snapshotRecord.state)
-        : null;
-      if (snapshotState && !legacyState) {
-        const { savedAt, revision } = await writeArchiveRecordAtomic(
-          db,
-          snapshotState,
-          { preservePrevious: false }
-        );
-        return {
-          state: snapshotState,
-          engine: 'indexeddb',
-          savedAt,
-          revision,
-          migratedFromLocalStorage: false,
-          recoveredFromSnapshot: true,
-          isNewSeed: false,
-        };
-      }
-
-      // Case 4: Migrate existing localStorage archive into IndexedDB without data loss
+    } catch (err) {
       if (legacyState) {
-        const { savedAt, revision } = await writeArchiveRecordAtomic(
-          db,
-          legacyState,
-          { preservePrevious: false }
-        );
-        const byteLength = new Blob([JSON.stringify(legacyState)]).size;
-        writeStorageMeta({
-          engine: 'indexeddb',
-          updatedAt: savedAt,
-          revision,
-          byteLength,
-        });
         return {
           state: legacyState,
-          engine: 'indexeddb',
-          savedAt,
-          revision,
-          migratedFromLocalStorage: true,
+          engine: 'localstorage',
+          savedAt: readStorageMeta()?.updatedAt ?? null,
+          revision: readStorageMeta()?.revision ?? 1,
+          migratedFromLocalStorage: false,
           recoveredFromSnapshot: false,
           isNewSeed: false,
+          warning:
+            'IndexedDB non è temporaneamente accessibile: caricata copia locale di emergenza senza modificare i dati salvati.',
         };
       }
+      throw err instanceof Error
+        ? err
+        : new Error('Impossibile accedere al database locale IndexedDB.');
+    }
 
-      // Case 5: Brand new device -> initialize default sample archive
-      const seed = createInitialSeedState();
-      const { savedAt, revision } = await writeArchiveRecordAtomic(db, seed, {
-        preservePrevious: false,
-      });
-      const serialized = JSON.stringify(seed);
-      tryUpdateLocalStorageMirror(serialized, true);
-      writeStorageMeta({
-        engine: 'indexeddb',
-        updatedAt: savedAt,
-        revision,
-        byteLength: new Blob([serialized]).size,
-      });
+    const primaryRecord = await readArchiveRecord(db, PRIMARY_RECORD_ID);
+    const primaryState = primaryRecord
+      ? normalizeStoredState(primaryRecord.state)
+      : null;
+
+    // Case 1: IndexedDB already holds the authoritative archive -> ALWAYS trust and load it immediately
+    if (primaryState) {
+      lastKnownRevision = primaryRecord?.revision ?? 1;
+      try {
+        const serialized = JSON.stringify(primaryState);
+        tryUpdateLocalStorageMirror(serialized, true);
+      } catch {
+        // Ignore mirror failure; IndexedDB is intact
+      }
       return {
-        state: seed,
+        state: primaryState,
+        engine: 'indexeddb',
+        savedAt: primaryRecord?.savedAt ?? null,
+        revision: primaryRecord?.revision ?? 1,
+        migratedFromLocalStorage: false,
+        recoveredFromSnapshot: false,
+        isNewSeed: false,
+      };
+    }
+
+    // Case 2: IndexedDB primary missing or corrupted -> try previous_snapshot recovery
+    const snapshotRecord = await readArchiveRecord(db, PREVIOUS_SNAPSHOT_ID);
+    const snapshotState = snapshotRecord
+      ? normalizeStoredState(snapshotRecord.state)
+      : null;
+    if (snapshotState) {
+      const { savedAt, revision } = await writeArchiveRecordAtomic(
+        db,
+        snapshotState,
+        { preservePrevious: false }
+      );
+      try {
+        tryUpdateLocalStorageMirror(JSON.stringify(snapshotState), true);
+      } catch {
+        // Ignore
+      }
+      return {
+        state: snapshotState,
         engine: 'indexeddb',
         savedAt,
         revision,
         migratedFromLocalStorage: false,
-        recoveredFromSnapshot: false,
-        isNewSeed: true,
+        recoveredFromSnapshot: true,
+        isNewSeed: false,
       };
-    } catch {
-      // If IndexedDB fails to open, fall back cleanly to localStorage without losing data
-    } finally {
-      db?.close();
     }
+
+    // Case 3: First migration from legacy localStorage into IndexedDB without data loss
+    if (legacyState) {
+      const { savedAt, revision } = await writeArchiveRecordAtomic(
+        db,
+        legacyState,
+        { preservePrevious: false }
+      );
+      const serialized = JSON.stringify(legacyState);
+      const byteLength = new Blob([serialized]).size;
+      writeStorageMeta({
+        engine: 'indexeddb',
+        updatedAt: savedAt,
+        revision,
+        byteLength,
+      });
+      return {
+        state: legacyState,
+        engine: 'indexeddb',
+        savedAt,
+        revision,
+        migratedFromLocalStorage: true,
+        recoveredFromSnapshot: false,
+        isNewSeed: false,
+      };
+    }
+
+    // Case 4: If primary record existed in IndexedDB but could not be normalized (corrupted)
+    // and neither snapshot nor legacyState could recover it -> refuse to silently wipe with seed!
+    if (primaryRecord) {
+      throw new Error(
+        'I dati salvati in IndexedDB risultano danneggiati e non possono essere letti. I dati esistenti non sono stati cancellati: riprova o ripristina da un file di backup.'
+      );
+    }
+
+    // Case 5: Genuinely brand-new browser/device with zero saved data -> initialize demo seed ONCE
+    const seed = createInitialSeedState();
+    const { savedAt, revision } = await writeArchiveRecordAtomic(db, seed, {
+      preservePrevious: false,
+    });
+    const serialized = JSON.stringify(seed);
+    tryUpdateLocalStorageMirror(serialized, true);
+    writeStorageMeta({
+      engine: 'indexeddb',
+      updatedAt: savedAt,
+      revision,
+      byteLength: new Blob([serialized]).size,
+    });
+    return {
+      state: seed,
+      engine: 'indexeddb',
+      savedAt,
+      revision,
+      migratedFromLocalStorage: false,
+      recoveredFromSnapshot: false,
+      isNewSeed: true,
+    };
   }
 
   if (legacyState) {
@@ -660,9 +839,8 @@ export async function readPreviousRecoverySnapshot(): Promise<{
   savedAt: string;
 } | null> {
   if (!isIndexedDbAvailable()) return null;
-  let db: IDBDatabase | null = null;
   try {
-    db = await openLocalDb();
+    const db = await openLocalDb();
     const rec = await readArchiveRecord(db, PREVIOUS_SNAPSHOT_ID);
     if (!rec) return null;
     const state = normalizeStoredState(rec.state);
@@ -670,8 +848,6 @@ export async function readPreviousRecoverySnapshot(): Promise<{
     return { state, savedAt: rec.savedAt };
   } catch {
     return null;
-  } finally {
-    db?.close();
   }
 }
 
@@ -681,11 +857,10 @@ export async function getSavedBackupDirectoryHandle(): Promise<{
   savedAt: string;
 } | null> {
   if (!isIndexedDbAvailable()) return null;
-  let db: IDBDatabase | null = null;
   try {
-    db = await openLocalDb();
+    const db = await openLocalDb();
     return await new Promise((resolve, reject) => {
-      const tx = db!.transaction(HANDLES_STORE, 'readonly');
+      const tx = db.transaction(HANDLES_STORE, 'readonly');
       const store = tx.objectStore(HANDLES_STORE);
       const req = store.get(BACKUP_DIR_HANDLE_ID);
       req.onsuccess = () => {
@@ -704,8 +879,6 @@ export async function getSavedBackupDirectoryHandle(): Promise<{
     });
   } catch {
     return null;
-  } finally {
-    db?.close();
   }
 }
 
@@ -713,11 +886,10 @@ export async function saveBackupDirectoryHandle(
   handle: FileSystemDirectoryHandle
 ): Promise<boolean> {
   if (!isIndexedDbAvailable()) return false;
-  let db: IDBDatabase | null = null;
   try {
-    db = await openLocalDb();
+    const db = await openLocalDb();
     await new Promise<void>((resolve, reject) => {
-      const tx = db!.transaction(HANDLES_STORE, 'readwrite');
+      const tx = db.transaction(HANDLES_STORE, 'readwrite');
       const store = tx.objectStore(HANDLES_STORE);
       store.put({
         id: BACKUP_DIR_HANDLE_ID,
@@ -731,25 +903,20 @@ export async function saveBackupDirectoryHandle(
     return true;
   } catch {
     return false;
-  } finally {
-    db?.close();
   }
 }
 
 export async function clearBackupDirectoryHandle(): Promise<void> {
   if (!isIndexedDbAvailable()) return;
-  let db: IDBDatabase | null = null;
   try {
-    db = await openLocalDb();
+    const db = await openLocalDb();
     await new Promise<void>((resolve) => {
-      const tx = db!.transaction(HANDLES_STORE, 'readwrite');
+      const tx = db.transaction(HANDLES_STORE, 'readwrite');
       tx.objectStore(HANDLES_STORE).delete(BACKUP_DIR_HANDLE_ID);
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
     });
   } catch {
     // Ignore
-  } finally {
-    db?.close();
   }
 }

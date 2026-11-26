@@ -1,6 +1,7 @@
 import { ArrowLeft, Filter, Plus, RotateCcw } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import type { ClassData } from '../../types/gradebook';
+import { loadUiPrefs, saveUiPrefsPatch } from '../../utils/localDatabase';
 import {
   computeSchoolDataSnapshot,
   YEAR_LEVEL_META,
@@ -44,10 +45,20 @@ export function DataDashboardView({
   onBackToGradebook,
   onOpenClassManager,
 }: DataDashboardViewProps) {
-  const [filter, setFilter] = useState<SchoolDataFilter>({
-    yearLevel: 'all',
-    selectedClassId: null,
+  const [filter, setFilter] = useState<SchoolDataFilter>(() => {
+    const prefs = loadUiPrefs();
+    return {
+      yearLevel: prefs.dataYearLevel,
+      selectedClassId: prefs.dataSelectedClassId,
+    };
   });
+
+  useEffect(() => {
+    saveUiPrefsPatch({
+      dataYearLevel: filter.yearLevel,
+      dataSelectedClassId: filter.selectedClassId,
+    });
+  }, [filter.yearLevel, filter.selectedClassId]);
 
   // Compute live snapshot directly from TabScore's current classes (no parallel store)
   const snapshot = useMemo(

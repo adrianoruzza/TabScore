@@ -58,12 +58,16 @@ export interface LocalBackupSaveResult {
   method: 'directory' | 'file_picker' | 'download';
   fileName: string;
   folderName?: string;
+  savedAt: string;
   sizeBytes: number;
+  fallbackNotice?: string;
 }
 
 export interface LocalBackupErrorResult {
   ok: false;
   cancelled?: boolean;
+  needsFolderReselect?: boolean;
+  folderName?: string;
   error: string;
 }
 
@@ -93,9 +97,28 @@ export function isSaveFilePickerSupported(): boolean {
 }
 
 function isUserAbortError(err: unknown): boolean {
-  return (
-    err instanceof DOMException && err.name === 'AbortError'
-  );
+  return err instanceof DOMException && err.name === 'AbortError';
+}
+
+function isSecurityContextError(err: unknown): boolean {
+  return err instanceof DOMException && err.name === 'SecurityError';
+}
+
+function describeFsError(err: unknown): string {
+  if (err instanceof DOMException) {
+    if (err.name === 'NotFoundError') {
+      return 'la cartella non esiste più o è stata spostata';
+    }
+    if (err.name === 'NotAllowedError') {
+      return 'il permesso di scrittura è stato revocato o negato';
+    }
+    if (err.name === 'QuotaExceededError') {
+      return 'spazio su disco esaurito';
+    }
+    if (err.message) return err.message;
+  }
+  if (err instanceof Error && err.message) return err.message;
+  return 'errore sconosciuto del file system';
 }
 
 async function ensureDirectoryWritePermission(
@@ -114,6 +137,72 @@ async function ensureDirectoryWritePermission(
   return true;
 }
 
+/**
+ * Resolves a non-colliding backup filename in the target directory without
+ * prompting for confirmation:
+ * `backup-tabscore-AAAA-MM-GG_HH-MM.json`, or `_2.json`, `_3.json` if a file
+ * with the exact same timestamp already exists.
+ */
+async function resolveUniqueBackupFileName(
+  dirHandle: FileSystemDirectoryHandle,
+  now: Date
+): Promise<string> {
+  const baseCandidate = buildTimestampedBackupFileName(now);
+  for (let seq = 1; seq <= 99; seq += 1) {
+    const candidate =
+      seq === 1 ? baseCandidate : buildTimestampedBackupFileName(now, seq);
+    try {
+      await dirHandle.getFileHandle(candidate, { create: false });
+      // File already exists -> try next progressive number
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'NotFoundError') {
+        return candidate;
+      }
+      // If browser does not distinguish NotFoundError, safely use candidate
+      return candidate;
+    }
+  }
+  return baseCandidate;
+}
+
+async function writeFullBackupToDirectoryHandle(
+  dirHandle: FileSystemDirectoryHandle,
+  folderName: string,
+  state: GradebookStoreState
+): Promise<LocalBackupResult> {
+  const now = new Date();
+  const payload = createFullBackupArchive(state, now);
+  const jsonText = JSON.stringify(payload, null, 2);
+  const sizeBytes = new Blob([jsonText]).size;
+
+  try {
+    const fileName = await resolveUniqueBackupFileName(dirHandle, now);
+    const fileHandle = await dirHandle.getFileHandle(fileName, { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write(jsonText);
+    await writable.close();
+
+    return {
+      ok: true,
+      method: 'directory',
+      fileName,
+      folderName,
+      savedAt: now.toISOString(),
+      sizeBytes,
+    };
+  } catch (err) {
+    if (isUserAbortError(err)) {
+      return { ok: false, cancelled: true, error: '' };
+    }
+    return {
+      ok: false,
+      needsFolderReselect: true,
+      folderName,
+      error: `Impossibile salvare nella cartella "${folderName}": ${describeFsError(err)}.`,
+    };
+  }
+}
+
 export async function getDedicatedBackupFolderName(): Promise<string | null> {
   if (!isDirectoryPickerSupported()) return null;
   const saved = await getSavedBackupDirectoryHandle();
@@ -121,14 +210,14 @@ export async function getDedicatedBackupFolderName(): Promise<string | null> {
 }
 
 export async function selectDedicatedBackupFolder(): Promise<
-  | { ok: true; folderName: string }
-  | { ok: false; cancelled?: boolean; error: string }
+  | { ok: true; folderName: string; handle: FileSystemDirectoryHandle }
+  | { ok: false; cancelled?: boolean; securityBlocked?: boolean; error: string }
 > {
   if (!isDirectoryPickerSupported()) {
     return {
       ok: false,
       error:
-        'Questo browser non supporta la selezione diretta di una cartella locale. Usa il salvataggio tramite download standard.',
+        'Questo browser non supporta la selezione diretta di una cartella locale.',
     };
   }
 
@@ -151,23 +240,127 @@ export async function selectDedicatedBackupFolder(): Promise<
       return {
         ok: false,
         error:
-          'Cartella selezionata, ma non è stato possibile memorizzarla nell’archivio locale del browser.',
+          'Cartella selezionata, ma non è stato possibile memorizzarla in IndexedDB.',
       };
     }
-    return { ok: true, folderName: handle.name || 'Cartella backup' };
+    return {
+      ok: true,
+      folderName: handle.name || 'Cartella backup',
+      handle,
+    };
   } catch (err) {
     if (isUserAbortError(err)) {
       return { ok: false, cancelled: true, error: '' };
     }
+    if (isSecurityContextError(err)) {
+      return {
+        ok: false,
+        securityBlocked: true,
+        error: `Accesso diretto alla cartella bloccato dal contesto del browser (${describeFsError(err)}).`,
+      };
+    }
     return {
       ok: false,
-      error: 'Impossibile selezionare la cartella locale di backup.',
+      error: `Impossibile selezionare la cartella locale di backup (${describeFsError(err)}).`,
     };
   }
 }
 
 export async function clearDedicatedBackupFolder(): Promise<void> {
   await clearBackupDirectoryHandle();
+}
+
+function fallbackDownloadFullBackup(
+  state: GradebookStoreState,
+  fallbackNotice: string
+): LocalBackupSaveResult {
+  const now = new Date();
+  const fileName = buildTimestampedBackupFileName(now);
+  const payload = createFullBackupArchive(state, now);
+  const jsonText = JSON.stringify(payload, null, 2);
+  const sizeBytes = new Blob([jsonText]).size;
+  triggerJsonDownload(fileName, payload);
+  return {
+    ok: true,
+    method: 'download',
+    fileName,
+    savedAt: now.toISOString(),
+    sizeBytes,
+    fallbackNotice,
+  };
+}
+
+/**
+ * One-click Floppy Backup button flow:
+ * - If showDirectoryPicker() is unsupported (e.g. Firefox / Safari): falls back to
+ *   classic `<a download>` and informs the user they will need to pick the folder manually.
+ * - First click (no saved folder handle): opens window.showDirectoryPicker(), stores the
+ *   FileSystemDirectoryHandle in IndexedDB, and immediately writes the backup file.
+ * - Subsequent clicks: reuses the saved handle without opening the picker, requesting
+ *   readwrite permission only if needed.
+ * - If permission was revoked or the folder is gone, returns `needsFolderReselect: true`
+ *   with the exact error reason so the UI lets the user choose a new folder immediately.
+ */
+export async function saveQuickFloppyBackup(
+  state: GradebookStoreState,
+  options?: { forceReselectFolder?: boolean }
+): Promise<LocalBackupResult> {
+  if (!isDirectoryPickerSupported()) {
+    return fallbackDownloadFullBackup(
+      state,
+      'Questo browser non supporta il salvataggio diretto in cartella: il file è stato scaricato e dovrai scegliere la cartella manualmente ogni volta.'
+    );
+  }
+
+  let saved = options?.forceReselectFolder
+    ? null
+    : await getSavedBackupDirectoryHandle();
+
+  if (!saved) {
+    const pick = await selectDedicatedBackupFolder();
+    if (!pick.ok) {
+      if (pick.securityBlocked) {
+        return fallbackDownloadFullBackup(
+          state,
+          'Il browser blocca la selezione diretta di cartelle in questo riquadro: il backup è stato scaricato con il download standard.'
+        );
+      }
+      return pick;
+    }
+    saved = {
+      handle: pick.handle,
+      folderName: pick.folderName,
+      savedAt: new Date().toISOString(),
+    };
+  }
+
+  try {
+    const granted = await ensureDirectoryWritePermission(saved.handle);
+    if (!granted) {
+      return {
+        ok: false,
+        needsFolderReselect: true,
+        folderName: saved.folderName,
+        error: `Permesso di scrittura revocato o negato per la cartella "${saved.folderName}".`,
+      };
+    }
+  } catch (err) {
+    if (isUserAbortError(err)) {
+      return { ok: false, cancelled: true, error: '' };
+    }
+    return {
+      ok: false,
+      needsFolderReselect: true,
+      folderName: saved.folderName,
+      error: `Impossibile accedere alla cartella "${saved.folderName}": ${describeFsError(err)}.`,
+    };
+  }
+
+  return writeFullBackupToDirectoryHandle(
+    saved.handle,
+    saved.folderName,
+    state
+  );
 }
 
 /**
@@ -184,62 +377,7 @@ export async function saveFullBackupToDedicatedFolder(
         'La selezione di una cartella locale dedicata non è supportata su questo browser. Utilizza il download locale.',
     };
   }
-
-  let saved = await getSavedBackupDirectoryHandle();
-  if (!saved) {
-    const pick = await selectDedicatedBackupFolder();
-    if (!pick.ok) {
-      return pick;
-    }
-    saved = await getSavedBackupDirectoryHandle();
-    if (!saved) {
-      return {
-        ok: false,
-        error: 'Cartella di backup non disponibile. Riprova a selezionarla.',
-      };
-    }
-  }
-
-  try {
-    const granted = await ensureDirectoryWritePermission(saved.handle);
-    if (!granted) {
-      return {
-        ok: false,
-        error:
-          'Autorizzazione di scrittura negata per la cartella selezionata. Riconferma l’accesso o cambia cartella.',
-      };
-    }
-
-    const now = new Date();
-    const fileName = buildTimestampedBackupFileName(now);
-    const payload = createFullBackupArchive(state, now);
-    const jsonText = JSON.stringify(payload, null, 2);
-    const sizeBytes = new Blob([jsonText]).size;
-
-    const fileHandle = await saved.handle.getFileHandle(fileName, {
-      create: true,
-    });
-    const writable = await fileHandle.createWritable();
-    await writable.write(jsonText);
-    await writable.close();
-
-    return {
-      ok: true,
-      method: 'directory',
-      fileName,
-      folderName: saved.folderName,
-      sizeBytes,
-    };
-  } catch (err) {
-    if (isUserAbortError(err)) {
-      return { ok: false, cancelled: true, error: '' };
-    }
-    return {
-      ok: false,
-      error:
-        'Impossibile scrivere nella cartella locale selezionata. Verifica che la cartella esista ancora o seleziona una nuova destinazione.',
-    };
-  }
+  return saveQuickFloppyBackup(state);
 }
 
 /**
@@ -275,6 +413,7 @@ export async function saveFullBackupLocally(
         ok: true,
         method: 'file_picker',
         fileName: fileHandle.name || fileName,
+        savedAt: now.toISOString(),
         sizeBytes,
       };
     } catch (err) {
@@ -290,6 +429,7 @@ export async function saveFullBackupLocally(
     ok: true,
     method: 'download',
     fileName,
+    savedAt: now.toISOString(),
     sizeBytes,
   };
 }
@@ -336,6 +476,7 @@ export async function saveSingleClassBackupLocally(
         ok: true,
         method: 'file_picker',
         fileName: fileHandle.name || fileName,
+        savedAt: now.toISOString(),
         sizeBytes,
       };
     } catch (err) {
@@ -350,6 +491,7 @@ export async function saveSingleClassBackupLocally(
     ok: true,
     method: 'download',
     fileName,
+    savedAt: now.toISOString(),
     sizeBytes,
   };
 }

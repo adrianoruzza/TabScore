@@ -1,12 +1,17 @@
 import {
   AlertTriangle,
+  CheckCircle2,
+  FolderOpen,
+  Loader2,
   Plus,
   Redo2,
+  RefreshCw,
+  Save,
   Settings,
   Undo2,
   X,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArchiveModal } from './components/ArchiveModal';
 import { AuditLogDrawer } from './components/AuditLogDrawer';
 import { ClassManagerModal } from './components/ClassManagerModal';
@@ -36,6 +41,8 @@ import type {
 } from './types/gradebook';
 import { OFFICIAL_TABSCORE_ICON } from './utils/appAssets';
 import { getClassColorOption } from './utils/classColors';
+import { saveQuickFloppyBackup } from './utils/localBackup';
+import { loadUiPrefs, saveUiPrefsPatch } from './utils/localDatabase';
 
 type ConfirmTarget =
   | { kind: 'class'; cls: ClassData }
@@ -61,9 +68,138 @@ export default function App() {
   const appZoom = useAppZoom();
 
   const [activeSection, setActiveSection] = useState<'gradebook' | 'data'>(
-    'gradebook'
+    () => loadUiPrefs().activeSection
   );
-  const [mobileMode, setMobileMode] = useState<'table' | 'cards'>('table');
+  const [mobileMode, setMobileMode] = useState<'table' | 'cards'>(
+    () => loadUiPrefs().mobileMode
+  );
+
+  useEffect(() => {
+    saveUiPrefsPatch({ activeSection, mobileMode });
+  }, [activeSection, mobileMode]);
+
+  // Quick Floppy Backup state & toast notification
+  const [isQuickBackingUp, setIsQuickBackingUp] = useState(false);
+  const [backupToast, setBackupToast] = useState<{
+    kind: 'success' | 'info' | 'error';
+    title: string;
+    detail?: string;
+    needsFolderReselect?: boolean;
+  } | null>(null);
+  const backupToastTimerRef = useRef<number | null>(null);
+
+  const dismissBackupToast = useCallback(() => {
+    if (backupToastTimerRef.current !== null) {
+      window.clearTimeout(backupToastTimerRef.current);
+      backupToastTimerRef.current = null;
+    }
+    setBackupToast(null);
+  }, []);
+
+  const showBackupToast = useCallback(
+    (
+      next: {
+        kind: 'success' | 'info' | 'error';
+        title: string;
+        detail?: string;
+        needsFolderReselect?: boolean;
+      },
+      autoHideMs?: number
+    ) => {
+      if (backupToastTimerRef.current !== null) {
+        window.clearTimeout(backupToastTimerRef.current);
+        backupToastTimerRef.current = null;
+      }
+      setBackupToast(next);
+      if (autoHideMs && autoHideMs > 0) {
+        backupToastTimerRef.current = window.setTimeout(() => {
+          setBackupToast(null);
+          backupToastTimerRef.current = null;
+        }, autoHideMs);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    return () => {
+      if (backupToastTimerRef.current !== null) {
+        window.clearTimeout(backupToastTimerRef.current);
+      }
+    };
+  }, []);
+
+  const handleQuickFloppyBackup = useCallback(
+    async (forceReselectFolder = false) => {
+      if (isQuickBackingUp) return;
+      setIsQuickBackingUp(true);
+      try {
+        const res = await saveQuickFloppyBackup(state, { forceReselectFolder });
+        if (res.ok) {
+          const timestampLabel = new Date(res.savedAt).toLocaleString('it-IT', {
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+          });
+          if (res.method === 'directory') {
+            const folderLabel = res.folderName || 'cartella selezionata';
+            showBackupToast(
+              {
+                kind: 'success',
+                title: `Backup salvato in ${folderLabel}`,
+                detail: `${timestampLabel} · ${res.fileName}`,
+              },
+              5500
+            );
+            store.recordAuditAction(
+              activeClass?.id ?? null,
+              activeClass?.name ?? 'Archivio completo',
+              'archivio',
+              'Backup rapido locale (.json)',
+              `Salvato backup "${res.fileName}" nella cartella "${folderLabel}".`
+            );
+          } else {
+            showBackupToast(
+              {
+                kind: 'info',
+                title: `Backup scaricato (${timestampLabel})`,
+                detail: res.fallbackNotice
+                  ? `${res.fileName} — ${res.fallbackNotice}`
+                  : res.fileName,
+              },
+              8500
+            );
+            store.recordAuditAction(
+              activeClass?.id ?? null,
+              activeClass?.name ?? 'Archivio completo',
+              'archivio',
+              'Backup rapido locale (.json)',
+              `Scaricato backup locale "${res.fileName}".`
+            );
+          }
+        } else if (!res.cancelled && res.error) {
+          showBackupToast({
+            kind: 'error',
+            title: 'Errore salvataggio backup',
+            detail: res.error,
+            needsFolderReselect: res.needsFolderReselect,
+          });
+        }
+      } finally {
+        setIsQuickBackingUp(false);
+      }
+    },
+    [
+      isQuickBackingUp,
+      state,
+      showBackupToast,
+      store.recordAuditAction,
+      activeClass?.id,
+      activeClass?.name,
+    ]
+  );
 
   // Modals & Drawers
   const [classManagerOpen, setClassManagerOpen] = useState(false);
@@ -407,6 +543,64 @@ export default function App() {
     }
   })();
 
+  if (!store.storageReady) {
+    return (
+      <div className="flex h-screen flex-col items-center justify-center gap-3 bg-slate-50 px-6 text-slate-900">
+        <img
+          src={OFFICIAL_TABSCORE_ICON}
+          alt="TabScore"
+          className="h-16 w-16 object-contain"
+        />
+        <span className="font-display text-base font-bold tracking-tight text-slate-900">
+          TabScore
+        </span>
+        <div className="flex items-center gap-2 text-xs font-medium text-slate-600">
+          <Loader2 className="h-4 w-4 animate-spin text-blue-700" />
+          <span>Caricamento dati...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (store.hydrationError) {
+    return (
+      <div className="flex h-screen flex-col items-center justify-center bg-slate-50 px-6 text-slate-900">
+        <div
+          role="alert"
+          className="w-full max-w-md rounded-lg border border-rose-200 bg-white p-6 text-center shadow-sm"
+        >
+          <img
+            src={OFFICIAL_TABSCORE_ICON}
+            alt="TabScore"
+            className="mx-auto mb-3 h-14 w-14 object-contain"
+          />
+          <div className="mx-auto mb-2 inline-flex h-10 w-10 items-center justify-center rounded-full bg-rose-50 text-rose-700">
+            <AlertTriangle className="h-5 w-5" />
+          </div>
+          <h1 className="font-display text-base font-semibold text-slate-900">
+            Errore di caricamento dell’archivio locale
+          </h1>
+          <p className="mt-2 text-xs leading-relaxed text-slate-600">
+            {store.hydrationError}
+          </p>
+          <p className="mt-2 text-[11px] font-medium text-emerald-800">
+            Per sicurezza, nessun dato salvato è stato cancellato o sovrascritto.
+          </p>
+          <div className="mt-5 flex justify-center">
+            <button
+              type="button"
+              onClick={store.retryHydration}
+              className="inline-flex min-h-9 items-center gap-2 rounded-md bg-blue-700 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-800"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+              Riprova caricamento
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-slate-50 text-slate-900">
       {/* Top Bar: Brand + Class Switcher & Management Nav */}
@@ -421,7 +615,7 @@ export default function App() {
             src={OFFICIAL_TABSCORE_ICON}
             alt=""
             aria-hidden="true"
-            className="h-8 w-auto shrink-0 object-contain"
+            className="h-8 w-8 shrink-0 object-contain"
           />
           <span className="font-display text-base font-bold tracking-tight text-slate-900">
             TabScore
@@ -526,11 +720,11 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-          {/* Undo / Redo */}
+          {/* Undo / Redo / Floppy Backup */}
           <div
             className="inline-flex items-center rounded-md border border-slate-300 bg-white p-0.5"
             role="group"
-            aria-label="Annulla e ripristina"
+            aria-label="Annulla, ripristina e salva backup"
           >
             <button
               type="button"
@@ -571,6 +765,24 @@ export default function App() {
               className="inline-flex h-7 w-7 items-center justify-center rounded text-slate-700 transition-colors hover:bg-slate-100 hover:text-slate-950 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-transparent"
             >
               <Redo2 className="h-3.5 w-3.5" />
+            </button>
+            <span
+              aria-hidden="true"
+              className="h-4 w-px bg-slate-200"
+            />
+            <button
+              type="button"
+              disabled={isQuickBackingUp}
+              onClick={() => void handleQuickFloppyBackup(false)}
+              title="Salva backup"
+              aria-label="Salva backup"
+              className="inline-flex h-7 w-7 items-center justify-center rounded text-slate-700 transition-colors hover:bg-slate-100 hover:text-slate-950 disabled:cursor-wait disabled:text-slate-400"
+            >
+              <Save
+                className={`h-3.5 w-3.5 ${
+                  isQuickBackingUp ? 'animate-pulse text-blue-600' : ''
+                }`}
+              />
             </button>
           </div>
 
@@ -777,7 +989,7 @@ export default function App() {
             <img
               src={OFFICIAL_TABSCORE_ICON}
               alt="TabScore"
-              className="mb-4 h-16 w-auto object-contain"
+              className="mb-4 h-16 w-16 object-contain"
             />
             <h2 className="font-display text-lg font-semibold text-slate-900">
               Nessuna classe presente nel registro
@@ -1101,6 +1313,65 @@ export default function App() {
         containerRef={appZoom.toastContainerRef}
         textRef={appZoom.toastTextRef}
       />
+
+      {backupToast && (
+        <div
+          role={backupToast.kind === 'error' ? 'alert' : 'status'}
+          aria-live="polite"
+          className={`fixed right-4 bottom-4 z-50 flex max-w-sm items-start gap-2.5 rounded-lg border px-3.5 py-3 shadow-lg ${
+            backupToast.kind === 'success'
+              ? 'border-emerald-200 bg-white text-slate-900'
+              : backupToast.kind === 'info'
+              ? 'border-blue-200 bg-white text-slate-900'
+              : 'border-rose-200 bg-rose-50 text-rose-950'
+          }`}
+        >
+          {backupToast.kind === 'success' ? (
+            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+          ) : backupToast.kind === 'info' ? (
+            <Save className="mt-0.5 h-4 w-4 shrink-0 text-blue-600" />
+          ) : (
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose-600" />
+          )}
+          <div className="min-w-0 flex-1 space-y-1">
+            <div className="text-xs font-semibold leading-snug">
+              {backupToast.title}
+            </div>
+            {backupToast.detail && (
+              <div
+                className={`text-[11px] leading-snug break-words ${
+                  backupToast.kind === 'error'
+                    ? 'text-rose-800'
+                    : 'text-slate-600'
+                }`}
+              >
+                {backupToast.detail}
+              </div>
+            )}
+            {backupToast.needsFolderReselect && (
+              <div className="pt-1">
+                <button
+                  type="button"
+                  disabled={isQuickBackingUp}
+                  onClick={() => void handleQuickFloppyBackup(true)}
+                  className="inline-flex items-center gap-1.5 rounded bg-rose-700 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-rose-800 disabled:opacity-60"
+                >
+                  <FolderOpen className="h-3.5 w-3.5" />
+                  Scegli nuova cartella
+                </button>
+              </div>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={dismissBackupToast}
+            aria-label="Chiudi notifica backup"
+            className="rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }

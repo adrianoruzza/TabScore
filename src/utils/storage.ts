@@ -307,32 +307,24 @@ export function sortAndNormalizeClasses(classes: ClassData[]): ClassData[] {
     .map((item, idx) => normalizeClassData(item.cls, idx));
 }
 
+export function createEmptyShellState(): GradebookStoreState {
+  return {
+    version: STORE_VERSION,
+    activeClassId: null,
+    classes: [],
+    auditLog: [],
+  };
+}
+
 export function loadStoreState(): GradebookStoreState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) {
-      // If IndexedDB already holds a large archive (> localStorage mirror limit),
-      // return an empty shell synchronously until async IndexedDB hydration finishes
-      // (avoiding flashing sample data or overwriting the real archive).
-      const metaRaw = localStorage.getItem('tabscore_storage_meta_v1');
-      if (metaRaw) {
-        const meta = JSON.parse(metaRaw) as { engine?: string };
-        if (meta?.engine === 'indexeddb') {
-          return {
-            version: STORE_VERSION,
-            activeClassId: null,
-            classes: [],
-            auditLog: [],
-          };
-        }
-      }
-      const seed = createInitialSeedState();
-      saveStoreState(seed);
-      return seed;
+      return createEmptyShellState();
     }
     const parsed = JSON.parse(raw) as GradebookStoreState;
     if (!parsed || !Array.isArray(parsed.classes)) {
-      throw new Error('Struttura archivio non valida');
+      return createEmptyShellState();
     }
     const normalizedClasses = sortAndNormalizeClasses(parsed.classes);
     return {
@@ -345,12 +337,7 @@ export function loadStoreState(): GradebookStoreState {
       auditLog: Array.isArray(parsed.auditLog) ? parsed.auditLog : [],
     };
   } catch {
-    return {
-      version: STORE_VERSION,
-      activeClassId: null,
-      classes: [],
-      auditLog: [],
-    };
+    return createEmptyShellState();
   }
 }
 
@@ -409,15 +396,21 @@ export function createFullBackupArchive(
   };
 }
 
-export function buildTimestampedBackupFileName(date: Date = new Date()): string {
+export function buildTimestampedBackupFileName(
+  date: Date = new Date(),
+  sequence?: number
+): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   const yyyy = date.getFullYear();
   const mm = pad(date.getMonth() + 1);
   const dd = pad(date.getDate());
   const hh = pad(date.getHours());
   const min = pad(date.getMinutes());
-  const ss = pad(date.getSeconds());
-  return `BACKUP_TabScore_${yyyy}-${mm}-${dd}_${hh}-${min}-${ss}.json`;
+  const suffix =
+    typeof sequence === 'number' && Number.isInteger(sequence) && sequence >= 2
+      ? `_${sequence}`
+      : '';
+  return `backup-tabscore-${yyyy}-${mm}-${dd}_${hh}-${min}${suffix}.json`;
 }
 
 export function exportFullBackupJson(state: GradebookStoreState): void {
