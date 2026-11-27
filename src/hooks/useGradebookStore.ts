@@ -48,6 +48,7 @@ import {
   normalizeClassData,
   sortAndNormalizeClasses,
 } from '../utils/storage';
+import { loadUiSession, updateUiSession } from '../utils/uiSessionState';
 
 function makeLog(
   classId: string | null,
@@ -1099,9 +1100,21 @@ export function useGradebookStore() {
         if (res.warning) {
           setStorageError(res.warning);
         }
-        stateRef.current = res.state;
+        // Restore last viewed class from UI session state in memory without modifying the school archive
+        const savedUiSession = loadUiSession();
+        const restoredActiveClassId =
+          savedUiSession.activeClassId &&
+          res.state.classes.some((c) => c.id === savedUiSession.activeClassId)
+            ? savedUiSession.activeClassId
+            : res.state.activeClassId;
+        const hydratedState =
+          restoredActiveClassId !== res.state.activeClassId
+            ? { ...res.state, activeClassId: restoredActiveClassId }
+            : res.state;
+
+        stateRef.current = hydratedState;
         setStoreRecord({
-          state: res.state,
+          state: hydratedState,
           history: EMPTY_STORE_HISTORY,
         });
         canPersistRef.current = true;
@@ -1237,6 +1250,11 @@ export function useGradebookStore() {
   // --- CLASS OPERATIONS ---
   const setActiveClass = useCallback(
     (classId: string) => {
+      updateUiSession(
+        (prev) =>
+          prev.activeClassId === classId ? prev : { ...prev, activeClassId: classId },
+        { immediate: true }
+      );
       commit(
         (prev) => {
           if (prev.activeClassId === classId) return prev;

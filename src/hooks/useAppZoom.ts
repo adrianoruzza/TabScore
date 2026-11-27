@@ -1,4 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  flushUiSessionNow,
+  loadUiSession,
+  updateUiSession,
+} from '../utils/uiSessionState';
 
 export const APP_ZOOM_STORAGE_KEY = 'tabscore_ui_zoom_v1';
 export const APP_ZOOM_MIN = 0.7;
@@ -128,28 +133,22 @@ export function isAppWorkspacePinching(node?: HTMLElement | null): boolean {
 }
 
 export function loadSavedAppZoom(): number {
-  if (typeof window === 'undefined') return APP_ZOOM_DEFAULT;
   try {
-    const raw = window.localStorage.getItem(APP_ZOOM_STORAGE_KEY);
-    if (!raw) return APP_ZOOM_DEFAULT;
-    const parsed = Number(raw);
-    if (!Number.isFinite(parsed)) return APP_ZOOM_DEFAULT;
-    return clampAppZoom(parsed);
+    return clampAppZoom(loadUiSession().zoom);
   } catch {
     return APP_ZOOM_DEFAULT;
   }
 }
 
-export function saveAppZoom(zoom: number): void {
-  if (typeof window === 'undefined') return;
-  try {
-    window.localStorage.setItem(
-      APP_ZOOM_STORAGE_KEY,
-      String(clampAppZoom(zoom))
-    );
-  } catch {
-    // Ignore storage quota or private-browsing errors
-  }
+export function saveAppZoom(
+  zoom: number,
+  options?: { debounce?: boolean }
+): void {
+  const clamped = clampAppZoom(zoom);
+  updateUiSession(
+    (prev) => (Math.abs(prev.zoom - clamped) < 0.001 ? prev : { ...prev, zoom: clamped }),
+    options?.debounce ? { immediate: false, debounceMs: 120 } : { immediate: true }
+  );
 }
 
 export function stepAppZoom(
@@ -220,7 +219,6 @@ export function useAppZoom() {
   zoomRef.current = zoom;
 
   const toastTimerRef = useRef<number | null>(null);
-  const wheelSaveTimerRef = useRef<number | null>(null);
 
   const syncLiveIndicators = useCallback(
     (pct: number, forceShowToast: boolean) => {
@@ -257,10 +255,7 @@ export function useAppZoom() {
       if (toastTimerRef.current !== null) {
         window.clearTimeout(toastTimerRef.current);
       }
-      if (wheelSaveTimerRef.current !== null) {
-        window.clearTimeout(wheelSaveTimerRef.current);
-        saveAppZoom(zoomRef.current);
-      }
+      flushUiSessionNow();
     };
   }, []);
 
@@ -346,21 +341,7 @@ export function useAppZoom() {
       syncLiveIndicators(Math.round(next * 100), false);
       setZoomState(next);
 
-      if (options?.debounceSave && typeof window !== 'undefined') {
-        if (wheelSaveTimerRef.current !== null) {
-          window.clearTimeout(wheelSaveTimerRef.current);
-        }
-        wheelSaveTimerRef.current = window.setTimeout(() => {
-          saveAppZoom(zoomRef.current);
-          wheelSaveTimerRef.current = null;
-        }, 120);
-      } else {
-        if (wheelSaveTimerRef.current !== null) {
-          window.clearTimeout(wheelSaveTimerRef.current);
-          wheelSaveTimerRef.current = null;
-        }
-        saveAppZoom(next);
-      }
+      saveAppZoom(next, { debounce: Boolean(options?.debounceSave) });
 
       if (options?.showToast) {
         showToastBriefly();

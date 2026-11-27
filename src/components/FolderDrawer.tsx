@@ -1,5 +1,5 @@
 import { CheckCircle2, Lock, Unlock, X } from 'lucide-react';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import type {
   ClassData,
   FolderDelivery,
@@ -17,6 +17,11 @@ import {
   STATUS_META,
 } from '../utils/calculations';
 import { getGradeColorStyle } from '../utils/gradeColors';
+import {
+  flushUiSessionNow,
+  loadUiSession,
+  updateUiSession,
+} from '../utils/uiSessionState';
 
 interface FolderDrawerProps {
   open: boolean;
@@ -52,6 +57,9 @@ export function FolderDrawer({
   onConfirm,
   onReopen,
 }: FolderDrawerProps) {
+  const bodyScrollRef = useRef<HTMLDivElement | null>(null);
+  const isRestoringScrollRef = useRef(false);
+
   useEffect(() => {
     if (!open) return;
     const handleKey = (e: KeyboardEvent) => {
@@ -60,6 +68,73 @@ export function FolderDrawer({
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
   }, [open, onClose]);
+
+  // Restore & persist drawer scroll position
+  useEffect(() => {
+    if (!open) return;
+    const el = bodyScrollRef.current;
+    if (!el) return;
+
+    const currentPanel = loadUiSession().openPanel;
+    const targetTop =
+      currentPanel?.kind === 'folder_drawer' &&
+      currentPanel.classId === classData.id &&
+      currentPanel.studentId === studentId &&
+      currentPanel.folderId === folder.id &&
+      typeof currentPanel.scrollTop === 'number'
+        ? currentPanel.scrollTop
+        : 0;
+
+    isRestoringScrollRef.current = true;
+    let raf1 = 0;
+    let raf2 = 0;
+    let releaseTimer: number | null = null;
+    raf1 = window.requestAnimationFrame(() => {
+      raf2 = window.requestAnimationFrame(() => {
+        const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
+        el.scrollTop = Math.min(targetTop, maxTop);
+        releaseTimer = window.setTimeout(() => {
+          isRestoringScrollRef.current = false;
+        }, 60);
+      });
+    });
+
+    const handleScroll = () => {
+      if (isRestoringScrollRef.current) return;
+      const top = Math.max(0, Math.round(el.scrollTop));
+      updateUiSession(
+        (prev) => {
+          if (
+            prev.openPanel?.kind !== 'folder_drawer' ||
+            prev.openPanel.classId !== classData.id ||
+            prev.openPanel.studentId !== studentId ||
+            prev.openPanel.folderId !== folder.id
+          ) {
+            return prev;
+          }
+          if ((prev.openPanel.scrollTop ?? 0) === top) return prev;
+          return {
+            ...prev,
+            openPanel: {
+              ...prev.openPanel,
+              scrollTop: top,
+            },
+          };
+        },
+        { immediate: false, debounceMs: 160 }
+      );
+    };
+
+    el.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      window.cancelAnimationFrame(raf1);
+      window.cancelAnimationFrame(raf2);
+      if (releaseTimer !== null) window.clearTimeout(releaseTimer);
+      isRestoringScrollRef.current = false;
+      el.removeEventListener('scroll', handleScroll);
+      flushUiSessionNow();
+    };
+  }, [open, classData.id, studentId, folder.id]);
 
   if (!open) return null;
 
@@ -129,7 +204,10 @@ export function FolderDrawer({
         </div>
 
         {/* Scrollable Body */}
-        <div className="flex-1 space-y-4 overflow-y-auto px-5 py-4">
+        <div
+          ref={bodyScrollRef}
+          className="flex-1 space-y-4 overflow-y-auto px-5 py-4"
+        >
           {isLocked && (
             <div className="flex items-center justify-between gap-3 rounded-md border border-blue-200 bg-blue-50 px-3.5 py-2.5 text-sm text-blue-900">
               <div className="flex items-center gap-2">

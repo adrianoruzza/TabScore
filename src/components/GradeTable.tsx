@@ -58,6 +58,12 @@ import {
 import { getGradeColorStyle } from '../utils/gradeColors';
 import { isAppWorkspacePinching } from '../hooks/useAppZoom';
 import { isPdfDataUrl } from '../utils/pdfViewer';
+import {
+  flushUiSessionNow,
+  getClassUiSession,
+  loadUiSession,
+  updateClassUiSession,
+} from '../utils/uiSessionState';
 import { CellPopover, type CellPopoverCloseReason } from './CellPopover';
 import { FolderDatePopover } from './FolderDatePopover';
 import { FolderGradePopover } from './FolderGradePopover';
@@ -154,25 +160,16 @@ const STUDENT_COL_MIN_W = 192;
 const STUDENT_COL_MAX_W = 360;
 const HOLD_HIGHLIGHT_DELAY_MS = 180;
 const HOLD_MOVE_CANCEL_PX = 8;
-const COLLAPSED_FOLDERS_STORAGE_KEY = 'tabscore_collapsed_folders_v1';
 
-function loadCollapsedFoldersMap(): Record<string, string[]> {
-  try {
-    const raw = localStorage.getItem(COLLAPSED_FOLDERS_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
+function loadCollapsedFoldersMapFromSession(): Record<string, string[]> {
+  const session = loadUiSession();
+  const map: Record<string, string[]> = {};
+  for (const [cid, clsUi] of Object.entries(session.byClass)) {
+    if (clsUi.collapsedFolderIds.length > 0) {
+      map[cid] = clsUi.collapsedFolderIds;
+    }
   }
-}
-
-function saveCollapsedFoldersMap(map: Record<string, string[]>): void {
-  try {
-    localStorage.setItem(COLLAPSED_FOLDERS_STORAGE_KEY, JSON.stringify(map));
-  } catch {
-    // Ignore storage quota errors
-  }
+  return map;
 }
 
 let textMeasureCtx: CanvasRenderingContext2D | null = null;
@@ -249,15 +246,34 @@ export function GradeTable({
   const [titleDraft, setTitleDraft] = useState('');
   const [highlightedStudentId, setHighlightedStudentId] = useState<
     string | null
-  >(null);
+  >(() => {
+    const saved = getClassUiSession(classData.id).highlightedStudentId;
+    return saved && classData.students.some((s) => s.id === saved)
+      ? saved
+      : null;
+  });
   const [collapsedFoldersByClass, setCollapsedFoldersByClass] = useState<
     Record<string, string[]>
-  >(() => loadCollapsedFoldersMap());
+  >(() => loadCollapsedFoldersMapFromSession());
   const [focusedGradeCell, setFocusedGradeCell] = useState<{
     studentId: string;
     plateId: string;
-  } | null>(null);
+  } | null>(() => {
+    const saved = getClassUiSession(classData.id).focusedGradeCell;
+    if (
+      saved &&
+      classData.students.some((s) => s.id === saved.studentId) &&
+      classData.plates.some((p) => p.id === saved.plateId)
+    ) {
+      return saved;
+    }
+    return null;
+  });
   const [fontsReadyTick, setFontsReadyTick] = useState(0);
+  const isRestoringScrollRef = useRef(false);
+  const restoredClassIdRef = useRef<string | null>(null);
+  const classDataRef = useRef(classData);
+  classDataRef.current = classData;
 
   const collapsedFolderSet = useMemo(() => {
     const list = collapsedFoldersByClass[classData.id] ?? [];
@@ -272,7 +288,11 @@ export function GradeTable({
         ? current.filter((id) => id !== folderId)
         : [...current, folderId];
       const nextMap = { ...prev, [classData.id]: nextList };
-      saveCollapsedFoldersMap(nextMap);
+      updateClassUiSession(
+        classData.id,
+        (cur) => ({ ...cur, collapsedFolderIds: nextList }),
+        { immediate: true }
+      );
       return nextMap;
     });
   };
@@ -289,14 +309,110 @@ export function GradeTable({
     };
   }, []);
 
+  // When switching classes (or mounting), close temporary popovers and restore per-class UI state
   useEffect(() => {
-    setHighlightedStudentId(null);
     setActivePopover(null);
     setActiveDatePopover(null);
     setActiveFolderGradePopover(null);
     setActivePlatePreview(null);
     setViewerPlateId(null);
-    setFocusedGradeCell(null);
+
+    const cls = classDataRef.current;
+    const saved = getClassUiSession(classData.id);
+    const validHighlight =
+      saved.highlightedStudentId &&
+      cls.students.some((s) => s.id === saved.highlightedStudentId)
+        ? saved.highlightedStudentId
+        : null;
+    const validFocus =
+      saved.focusedGradeCell &&
+      cls.students.some((s) => s.id === saved.focusedGradeCell!.studentId) &&
+      cls.plates.some((p) => p.id === saved.focusedGradeCell!.plateId)
+        ? saved.focusedGradeCell
+        : null;
+
+    setHighlightedStudentId(validHighlight);
+    setFocusedGradeCell(validFocus);
+    restoredClassIdRef.current = classData.id;
+
+    // Restore grid scroll position after layout & zoom settle
+    const targetLeft = saved.gridScroll.left;
+    const targetTop = saved.gridScroll.top;
+    isRestoringScrollRef.current = true;
+    let raf1 = 0;
+    let raf2 = 0;
+    let releaseTimer: number | null = null;
+    raf1 = window.requestAnimationFrame(() => {
+      raf2 = window.requestAnimationFrame(() => {
+        const el = scrollContainerRef.current;
+        if (el) {
+          const maxLeft = Math.max(0, el.scrollWidth - el.clientWidth);
+          const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
+          el.scrollLeft = Math.min(targetLeft, maxLeft);
+          el.scrollTop = Math.min(targetTop, maxTop);
+        }
+        releaseTimer = window.setTimeout(() => {
+          isRestoringScrollRef.current = false;
+        }, 60);
+      });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(raf1);
+      window.cancelAnimationFrame(raf2);
+      if (releaseTimer !== null) window.clearTimeout(releaseTimer);
+      isRestoringScrollRef.current = false;
+      flushUiSessionNow();
+    };
+  }, [classData.id]);
+
+  // Persist highlighted student & focused grid cell per class immediately on change
+  useEffect(() => {
+    if (restoredClassIdRef.current !== classData.id) return;
+    updateClassUiSession(
+      classData.id,
+      (cur) => {
+        const sameFocus =
+          cur.focusedGradeCell?.studentId === focusedGradeCell?.studentId &&
+          cur.focusedGradeCell?.plateId === focusedGradeCell?.plateId;
+        if (cur.highlightedStudentId === highlightedStudentId && sameFocus) {
+          return cur;
+        }
+        return {
+          ...cur,
+          highlightedStudentId,
+          focusedGradeCell,
+        };
+      },
+      { immediate: true }
+    );
+  }, [classData.id, highlightedStudentId, focusedGradeCell]);
+
+  // Save grid scroll position smoothly with debouncing during scroll
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const classId = classData.id;
+
+    const handleScroll = () => {
+      if (isRestoringScrollRef.current) return;
+      const left = Math.max(0, Math.round(el.scrollLeft));
+      const top = Math.max(0, Math.round(el.scrollTop));
+      updateClassUiSession(
+        classId,
+        (cur) =>
+          cur.gridScroll.left === left && cur.gridScroll.top === top
+            ? cur
+            : { ...cur, gridScroll: { left, top } },
+        { immediate: false, debounceMs: 160 }
+      );
+    };
+
+    el.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      el.removeEventListener('scroll', handleScroll);
+      flushUiSessionNow();
+    };
   }, [classData.id]);
 
   // Press-and-hold activates persistent highlight; releasing does NOT turn it off

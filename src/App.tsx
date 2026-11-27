@@ -42,7 +42,13 @@ import type {
 import { OFFICIAL_TABSCORE_ICON } from './utils/appAssets';
 import { getClassColorOption } from './utils/classColors';
 import { saveQuickFloppyBackup } from './utils/localBackup';
-import { loadUiPrefs, saveUiPrefsPatch } from './utils/localDatabase';
+import {
+  flushUiSessionNow,
+  loadUiSession,
+  reconcileUiSessionWithClasses,
+  updateUiSession,
+  type RestorableUiPanel,
+} from './utils/uiSessionState';
 
 type ConfirmTarget =
   | { kind: 'class'; cls: ClassData }
@@ -68,15 +74,11 @@ export default function App() {
   const appZoom = useAppZoom();
 
   const [activeSection, setActiveSection] = useState<'gradebook' | 'data'>(
-    () => loadUiPrefs().activeSection
+    () => loadUiSession().activeSection
   );
   const [mobileMode, setMobileMode] = useState<'table' | 'cards'>(
-    () => loadUiPrefs().mobileMode
+    () => loadUiSession().mobileMode
   );
-
-  useEffect(() => {
-    saveUiPrefsPatch({ activeSection, mobileMode });
-  }, [activeSection, mobileMode]);
 
   // Quick Floppy Backup state & toast notification
   const [isQuickBackingUp, setIsQuickBackingUp] = useState(false);
@@ -210,11 +212,6 @@ export default function App() {
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [auditOpen, setAuditOpen] = useState(false);
 
-  useEffect(() => {
-    setStudentStatsId(null);
-    setFolderStatsId(null);
-  }, [activeClass?.id]);
-
   const [studentModal, setStudentModal] = useState<{
     open: boolean;
     student: Student | null;
@@ -236,6 +233,206 @@ export default function App() {
   } | null>(null);
 
   const [confirmTarget, setConfirmTarget] = useState<ConfirmTarget | null>(null);
+
+  // Restore last UI session once the local school archive finishes hydrating (never modifies school data)
+  const sessionRestoredRef = useRef(false);
+  const prevActiveClassIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!store.storageReady || store.hydrationError) return;
+    if (sessionRestoredRef.current) return;
+
+    const currentSession = loadUiSession();
+    const { session: reconciled, changed } = reconcileUiSessionWithClasses(
+      currentSession,
+      state.classes
+    );
+    const resolvedClassId = activeClass?.id ?? reconciled.activeClassId ?? null;
+    const syncedSession =
+      reconciled.activeClassId !== resolvedClassId
+        ? { ...reconciled, activeClassId: resolvedClassId }
+        : reconciled;
+
+    if (changed || syncedSession !== reconciled) {
+      updateUiSession(() => syncedSession, { immediate: true });
+    }
+
+    setActiveSection(syncedSession.activeSection);
+    setMobileMode(syncedSession.mobileMode);
+
+    const panel = syncedSession.openPanel;
+    if (panel) {
+      if (panel.kind === 'audit_log') {
+        setAuditOpen(true);
+      } else if (resolvedClassId && panel.classId === resolvedClassId) {
+        if (panel.kind === 'folder_drawer') {
+          setActiveFolderCell({
+            studentId: panel.studentId,
+            folderId: panel.folderId,
+          });
+        } else if (panel.kind === 'class_stats') {
+          setStatsOpen(true);
+        } else if (panel.kind === 'student_stats') {
+          setStudentStatsId(panel.studentId);
+        } else if (panel.kind === 'folder_stats') {
+          setFolderStatsId(panel.folderId);
+        }
+      }
+    }
+
+    prevActiveClassIdRef.current = resolvedClassId;
+    sessionRestoredRef.current = true;
+  }, [store.storageReady, store.hydrationError, state.classes, activeClass?.id]);
+
+  // Reset class-scoped inspection panels only when switching from one loaded class to another
+  useEffect(() => {
+    if (!sessionRestoredRef.current) return;
+    const nextClassId = activeClass?.id ?? null;
+    if (
+      prevActiveClassIdRef.current !== null &&
+      prevActiveClassIdRef.current !== nextClassId
+    ) {
+      setStudentStatsId(null);
+      setFolderStatsId(null);
+      setActiveFolderCell(null);
+      setStatsOpen(false);
+    }
+    prevActiveClassIdRef.current = nextClassId;
+  }, [activeClass?.id]);
+
+  // Clear stale panel targets if a student or folder is deleted during the session
+  useEffect(() => {
+    if (!activeClass) {
+      if (activeFolderCell) setActiveFolderCell(null);
+      if (studentStatsId) setStudentStatsId(null);
+      if (folderStatsId) setFolderStatsId(null);
+      if (statsOpen) setStatsOpen(false);
+      return;
+    }
+    if (
+      activeFolderCell &&
+      (!activeClass.students.some((s) => s.id === activeFolderCell.studentId) ||
+        !activeClass.folders.some((f) => f.id === activeFolderCell.folderId))
+    ) {
+      setActiveFolderCell(null);
+    }
+    if (
+      studentStatsId &&
+      !activeClass.students.some((s) => s.id === studentStatsId)
+    ) {
+      setStudentStatsId(null);
+    }
+    if (
+      folderStatsId &&
+      !activeClass.folders.some((f) => f.id === folderStatsId)
+    ) {
+      setFolderStatsId(null);
+    }
+  }, [activeClass, activeFolderCell, studentStatsId, folderStatsId, statsOpen]);
+
+  // Persist significant UI session state automatically during use (never temporary edit/confirm modals)
+  useEffect(() => {
+    if (!sessionRestoredRef.current) return;
+    const clsId = activeClass?.id ?? null;
+
+    updateUiSession(
+      (prev) => {
+        let nextOpenPanel: RestorableUiPanel | null = null;
+        if (activeFolderCell && clsId) {
+          const prevScrollTop =
+            prev.openPanel?.kind === 'folder_drawer' &&
+            prev.openPanel.classId === clsId &&
+            prev.openPanel.studentId === activeFolderCell.studentId &&
+            prev.openPanel.folderId === activeFolderCell.folderId
+              ? prev.openPanel.scrollTop
+              : undefined;
+          nextOpenPanel =
+            prevScrollTop && prevScrollTop > 0
+              ? {
+                  kind: 'folder_drawer',
+                  classId: clsId,
+                  studentId: activeFolderCell.studentId,
+                  folderId: activeFolderCell.folderId,
+                  scrollTop: prevScrollTop,
+                }
+              : {
+                  kind: 'folder_drawer',
+                  classId: clsId,
+                  studentId: activeFolderCell.studentId,
+                  folderId: activeFolderCell.folderId,
+                };
+        } else if (studentStatsId && clsId) {
+          nextOpenPanel = {
+            kind: 'student_stats',
+            classId: clsId,
+            studentId: studentStatsId,
+          };
+        } else if (folderStatsId && clsId) {
+          nextOpenPanel = {
+            kind: 'folder_stats',
+            classId: clsId,
+            folderId: folderStatsId,
+          };
+        } else if (statsOpen && clsId) {
+          nextOpenPanel = {
+            kind: 'class_stats',
+            classId: clsId,
+          };
+        } else if (auditOpen) {
+          nextOpenPanel = { kind: 'audit_log' };
+        }
+
+        const samePanel =
+          JSON.stringify(prev.openPanel) === JSON.stringify(nextOpenPanel);
+        if (
+          prev.activeClassId === clsId &&
+          prev.activeSection === activeSection &&
+          prev.mobileMode === mobileMode &&
+          samePanel
+        ) {
+          return prev;
+        }
+        return {
+          ...prev,
+          activeClassId: clsId,
+          activeSection,
+          mobileMode,
+          openPanel: nextOpenPanel,
+        };
+      },
+      { immediate: true }
+    );
+  }, [
+    activeClass?.id,
+    activeSection,
+    mobileMode,
+    activeFolderCell,
+    studentStatsId,
+    folderStatsId,
+    statsOpen,
+    auditOpen,
+  ]);
+
+  // Flush any pending debounced UI session updates (e.g., scroll positions) on backgrounding / close
+  useEffect(() => {
+    const flushOnHide = () => {
+      flushUiSessionNow();
+    };
+    const handleVisibility = () => {
+      if (document.visibilityState === 'hidden') {
+        flushUiSessionNow();
+      }
+    };
+    window.addEventListener('pagehide', flushOnHide);
+    window.addEventListener('beforeunload', flushOnHide);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      window.removeEventListener('pagehide', flushOnHide);
+      window.removeEventListener('beforeunload', flushOnHide);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      flushUiSessionNow();
+    };
+  }, []);
 
   const isEditingBusy = Boolean(
     studentModal.open ||

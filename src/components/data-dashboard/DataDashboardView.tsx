@@ -1,7 +1,11 @@
 import { ArrowLeft, Filter, Plus, RotateCcw } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ClassData } from '../../types/gradebook';
-import { loadUiPrefs, saveUiPrefsPatch } from '../../utils/localDatabase';
+import {
+  flushUiSessionNow,
+  loadUiSession,
+  updateUiSession,
+} from '../../utils/uiSessionState';
 import {
   computeSchoolDataSnapshot,
   YEAR_LEVEL_META,
@@ -45,20 +49,74 @@ export function DataDashboardView({
   onBackToGradebook,
   onOpenClassManager,
 }: DataDashboardViewProps) {
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const isRestoringScrollRef = useRef(false);
+
   const [filter, setFilter] = useState<SchoolDataFilter>(() => {
-    const prefs = loadUiPrefs();
+    const session = loadUiSession();
     return {
-      yearLevel: prefs.dataYearLevel,
-      selectedClassId: prefs.dataSelectedClassId,
+      yearLevel: session.dataFilter.yearLevel,
+      selectedClassId: session.dataFilter.selectedClassId,
     };
   });
 
   useEffect(() => {
-    saveUiPrefsPatch({
-      dataYearLevel: filter.yearLevel,
-      dataSelectedClassId: filter.selectedClassId,
-    });
+    updateUiSession(
+      (prev) =>
+        prev.dataFilter.yearLevel === filter.yearLevel &&
+        prev.dataFilter.selectedClassId === filter.selectedClassId
+          ? prev
+          : {
+              ...prev,
+              dataFilter: {
+                yearLevel: filter.yearLevel,
+                selectedClassId: filter.selectedClassId,
+              },
+            },
+      { immediate: true }
+    );
   }, [filter.yearLevel, filter.selectedClassId]);
+
+  // Restore & persist dashboard vertical scroll position
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+
+    const targetTop = loadUiSession().dataScrollTop;
+    isRestoringScrollRef.current = true;
+    let raf1 = 0;
+    let raf2 = 0;
+    let releaseTimer: number | null = null;
+    raf1 = window.requestAnimationFrame(() => {
+      raf2 = window.requestAnimationFrame(() => {
+        const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
+        el.scrollTop = Math.min(targetTop, maxTop);
+        releaseTimer = window.setTimeout(() => {
+          isRestoringScrollRef.current = false;
+        }, 60);
+      });
+    });
+
+    const handleScroll = () => {
+      if (isRestoringScrollRef.current) return;
+      const top = Math.max(0, Math.round(el.scrollTop));
+      updateUiSession(
+        (prev) =>
+          prev.dataScrollTop === top ? prev : { ...prev, dataScrollTop: top },
+        { immediate: false, debounceMs: 160 }
+      );
+    };
+
+    el.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      window.cancelAnimationFrame(raf1);
+      window.cancelAnimationFrame(raf2);
+      if (releaseTimer !== null) window.clearTimeout(releaseTimer);
+      isRestoringScrollRef.current = false;
+      el.removeEventListener('scroll', handleScroll);
+      flushUiSessionNow();
+    };
+  }, []);
 
   // Compute live snapshot directly from TabScore's current classes (no parallel store)
   const snapshot = useMemo(
@@ -153,6 +211,7 @@ export function DataDashboardView({
 
   return (
     <div
+      ref={scrollContainerRef}
       data-zoom-scroll-container="true"
       className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-slate-50 touch-pan-x touch-pan-y"
     >

@@ -41,6 +41,11 @@ import {
 } from '../utils/deliveryDateColors';
 import { getGradeColorStyle } from '../utils/gradeColors';
 import { isPdfDataUrl } from '../utils/pdfViewer';
+import {
+  flushUiSessionNow,
+  getClassUiSession,
+  updateClassUiSession,
+} from '../utils/uiSessionState';
 import { PlateImageViewerModal } from './PlateImageViewerModal';
 import { RapidGradePicker } from './RapidGradePicker';
 
@@ -78,12 +83,30 @@ export function MobilePlateView({
     [classData.plates]
   );
 
+  const resolveColumnKeyForClass = (cls: ClassData): string => {
+    const savedKey = getClassUiSession(cls.id).mobileSelectedColumnKey;
+    if (savedKey) {
+      if (
+        savedKey.startsWith('plate:') &&
+        cls.plates.some((p) => `plate:${p.id}` === savedKey)
+      ) {
+        return savedKey;
+      }
+      if (
+        savedKey.startsWith('folder:') &&
+        cls.folders.some((f) => `folder:${f.id}` === savedKey)
+      ) {
+        return savedKey;
+      }
+    }
+    const sorted = sortPlates(cls.plates);
+    if (sorted[0]) return `plate:${sorted[0].id}`;
+    if (cls.folders[0]) return `folder:${cls.folders[0].id}`;
+    return '';
+  };
+
   const [selectedColumnKey, setSelectedColumnKey] = useState<string>(() =>
-    orderedPlates[0]
-      ? `plate:${orderedPlates[0].id}`
-      : classData.folders[0]
-      ? `folder:${classData.folders[0].id}`
-      : ''
+    resolveColumnKeyForClass(classData)
   );
 
   const [mobileGradeTarget, setMobileGradeTarget] = useState<{
@@ -95,8 +118,18 @@ export function MobilePlateView({
 
   const [highlightedStudentId, setHighlightedStudentId] = useState<
     string | null
-  >(null);
+  >(() => {
+    const saved = getClassUiSession(classData.id).mobileHighlightedStudentId;
+    return saved && classData.students.some((s) => s.id === saved)
+      ? saved
+      : null;
+  });
   const [viewerOpen, setViewerOpen] = useState(false);
+  const listScrollRef = useRef<HTMLDivElement | null>(null);
+  const isRestoringScrollRef = useRef(false);
+  const restoredClassIdRef = useRef<string | null>(null);
+  const classDataRef = useRef(classData);
+  classDataRef.current = classData;
   const holdTimerRef = useRef<number | null>(null);
   const holdStateRef = useRef<{
     studentId: string;
@@ -107,8 +140,107 @@ export function MobilePlateView({
   } | null>(null);
 
   useEffect(() => {
-    setHighlightedStudentId(null);
     setViewerOpen(false);
+    setMobileGradeTarget(null);
+    const cls = classDataRef.current;
+    const saved = getClassUiSession(classData.id);
+    setSelectedColumnKey(resolveColumnKeyForClass(cls));
+    setHighlightedStudentId(
+      saved.mobileHighlightedStudentId &&
+        cls.students.some((s) => s.id === saved.mobileHighlightedStudentId)
+        ? saved.mobileHighlightedStudentId
+        : null
+    );
+    restoredClassIdRef.current = classData.id;
+
+    // Restore vertical list scroll position
+    const targetTop = saved.mobileScrollTop;
+    isRestoringScrollRef.current = true;
+    let raf1 = 0;
+    let raf2 = 0;
+    let releaseTimer: number | null = null;
+    raf1 = window.requestAnimationFrame(() => {
+      raf2 = window.requestAnimationFrame(() => {
+        const el = listScrollRef.current;
+        if (el) {
+          const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
+          el.scrollTop = Math.min(targetTop, maxTop);
+        }
+        releaseTimer = window.setTimeout(() => {
+          isRestoringScrollRef.current = false;
+        }, 60);
+      });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(raf1);
+      window.cancelAnimationFrame(raf2);
+      if (releaseTimer !== null) window.clearTimeout(releaseTimer);
+      isRestoringScrollRef.current = false;
+      flushUiSessionNow();
+    };
+  }, [classData.id]);
+
+  // If the selected plate/folder is deleted while viewing this class, fall back to a valid column
+  useEffect(() => {
+    if (!selectedColumnKey) {
+      const next = resolveColumnKeyForClass(classData);
+      if (next) setSelectedColumnKey(next);
+      return;
+    }
+    const stillValid =
+      (selectedColumnKey.startsWith('plate:') &&
+        classData.plates.some((p) => `plate:${p.id}` === selectedColumnKey)) ||
+      (selectedColumnKey.startsWith('folder:') &&
+        classData.folders.some((f) => `folder:${f.id}` === selectedColumnKey));
+    if (!stillValid) {
+      setSelectedColumnKey(resolveColumnKeyForClass(classData));
+    }
+  }, [classData, selectedColumnKey]);
+
+  // Persist selected plate/folder column & highlighted student per class
+  useEffect(() => {
+    if (restoredClassIdRef.current !== classData.id) return;
+    updateClassUiSession(
+      classData.id,
+      (cur) => {
+        const nextCol = selectedColumnKey || null;
+        if (
+          cur.mobileSelectedColumnKey === nextCol &&
+          cur.mobileHighlightedStudentId === highlightedStudentId
+        ) {
+          return cur;
+        }
+        return {
+          ...cur,
+          mobileSelectedColumnKey: nextCol,
+          mobileHighlightedStudentId: highlightedStudentId,
+        };
+      },
+      { immediate: true }
+    );
+  }, [classData.id, selectedColumnKey, highlightedStudentId]);
+
+  // Save vertical list scroll position debounced
+  useEffect(() => {
+    const el = listScrollRef.current;
+    if (!el) return;
+    const classId = classData.id;
+    const handleScroll = () => {
+      if (isRestoringScrollRef.current) return;
+      const top = Math.max(0, Math.round(el.scrollTop));
+      updateClassUiSession(
+        classId,
+        (cur) =>
+          cur.mobileScrollTop === top ? cur : { ...cur, mobileScrollTop: top },
+        { immediate: false, debounceMs: 160 }
+      );
+    };
+    el.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      el.removeEventListener('scroll', handleScroll);
+      flushUiSessionNow();
+    };
   }, [classData.id]);
 
   useEffect(() => {
@@ -350,7 +482,10 @@ export function MobilePlateView({
       )}
 
       {/* Student rows */}
-      <div className="flex-1 divide-y divide-slate-200 overflow-y-auto">
+      <div
+        ref={listScrollRef}
+        className="flex-1 divide-y divide-slate-200 overflow-y-auto"
+      >
         {students.length === 0 ? (
           <div className="p-8 text-center text-sm text-slate-500">
             Nessuno studente da visualizzare.

@@ -1,6 +1,7 @@
 import { Search, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import type { AuditCategory, AuditLogEntry } from '../types/gradebook';
+import { loadUiSession, updateUiSession } from '../utils/uiSessionState';
 
 interface AuditLogDrawerProps {
   open: boolean;
@@ -26,9 +27,27 @@ export function AuditLogDrawer({
   activeClassId,
   onClose,
 }: AuditLogDrawerProps) {
-  const [category, setCategory] = useState<AuditCategory | 'all'>('all');
-  const [onlyActiveClass, setOnlyActiveClass] = useState(false);
+  const [category, setCategory] = useState<AuditCategory | 'all'>(
+    () => loadUiSession().auditFilter.category
+  );
+  const [onlyActiveClass, setOnlyActiveClass] = useState<boolean>(
+    () => loadUiSession().auditFilter.onlyActiveClass
+  );
   const [query, setQuery] = useState('');
+
+  useEffect(() => {
+    updateUiSession(
+      (prev) =>
+        prev.auditFilter.category === category &&
+        prev.auditFilter.onlyActiveClass === onlyActiveClass
+          ? prev
+          : {
+              ...prev,
+              auditFilter: { category, onlyActiveClass },
+            },
+      { immediate: true }
+    );
+  }, [category, onlyActiveClass]);
 
   useEffect(() => {
     if (!open) return;

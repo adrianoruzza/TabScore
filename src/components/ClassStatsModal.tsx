@@ -11,6 +11,7 @@ import {
   sortPlates,
 } from '../utils/calculations';
 import { getGradeColorStyle } from '../utils/gradeColors';
+import { loadUiSession, updateUiSession } from '../utils/uiSessionState';
 
 interface ClassStatsModalProps {
   open: boolean;
@@ -27,7 +28,19 @@ export function ClassStatsModal({
   onOpenStudentStats,
   onClose,
 }: ClassStatsModalProps) {
-  const [activeTab, setActiveTab] = useState<StatsTab>('panoramica');
+  const [activeTab, setActiveTab] = useState<StatsTab>(
+    () => loadUiSession().classStatsTab
+  );
+
+  useEffect(() => {
+    updateUiSession(
+      (prev) =>
+        prev.classStatsTab === activeTab
+          ? prev
+          : { ...prev, classStatsTab: activeTab },
+      { immediate: true }
+    );
+  }, [activeTab]);
 
   useEffect(() => {
     if (!open) return;

@@ -15,7 +15,6 @@ const PREVIOUS_SNAPSHOT_ID = 'previous_snapshot';
 const BACKUP_DIR_HANDLE_ID = 'backup_directory';
 
 export const STORAGE_META_KEY = 'tabscore_storage_meta_v1';
-export const UI_PREFS_STORAGE_KEY = 'tabscore_ui_prefs_v1';
 const LOCALSTORAGE_MIRROR_MAX_BYTES = 2_500_000;
 
 export type PersistenceEngine = 'indexeddb' | 'localstorage';
@@ -25,13 +24,6 @@ export interface LocalStorageMeta {
   updatedAt: string;
   revision: number;
   byteLength: number;
-}
-
-export interface TabScoreUiPrefs {
-  activeSection: 'gradebook' | 'data';
-  mobileMode: 'table' | 'cards';
-  dataYearLevel: 'all' | 'unclassified' | 1 | 2 | 3 | 4 | 5;
-  dataSelectedClassId: string | null;
 }
 
 interface ArchiveDbRecord {
@@ -80,58 +72,6 @@ let legacyCleanupDone = false;
 let cachedDb: IDBDatabase | null = null;
 let cachedDbPromise: Promise<IDBDatabase> | null = null;
 let lastKnownRevision = 0;
-
-const DEFAULT_UI_PREFS: TabScoreUiPrefs = {
-  activeSection: 'gradebook',
-  mobileMode: 'table',
-  dataYearLevel: 'all',
-  dataSelectedClassId: null,
-};
-
-export function loadUiPrefs(): TabScoreUiPrefs {
-  if (typeof localStorage === 'undefined') return { ...DEFAULT_UI_PREFS };
-  try {
-    const raw = localStorage.getItem(UI_PREFS_STORAGE_KEY);
-    if (!raw) return { ...DEFAULT_UI_PREFS };
-    const parsed = JSON.parse(raw) as Partial<TabScoreUiPrefs>;
-    const activeSection = parsed.activeSection === 'data' ? 'data' : 'gradebook';
-    const mobileMode = parsed.mobileMode === 'cards' ? 'cards' : 'table';
-    const yl = parsed.dataYearLevel;
-    const dataYearLevel: TabScoreUiPrefs['dataYearLevel'] =
-      yl === 'all' ||
-      yl === 'unclassified' ||
-      yl === 1 ||
-      yl === 2 ||
-      yl === 3 ||
-      yl === 4 ||
-      yl === 5
-        ? yl
-        : 'all';
-    const dataSelectedClassId =
-      typeof parsed.dataSelectedClassId === 'string' && parsed.dataSelectedClassId
-        ? parsed.dataSelectedClassId
-        : null;
-    return {
-      activeSection,
-      mobileMode,
-      dataYearLevel,
-      dataSelectedClassId,
-    };
-  } catch {
-    return { ...DEFAULT_UI_PREFS };
-  }
-}
-
-export function saveUiPrefsPatch(patch: Partial<TabScoreUiPrefs>): void {
-  if (typeof localStorage === 'undefined') return;
-  try {
-    const current = loadUiPrefs();
-    const next: TabScoreUiPrefs = { ...current, ...patch };
-    localStorage.setItem(UI_PREFS_STORAGE_KEY, JSON.stringify(next));
-  } catch {
-    // Ignore minor UI preference storage failures
-  }
-}
 
 /**
  * Purges obsolete Google Drive / Firebase / cloud-sync keys left over in the
